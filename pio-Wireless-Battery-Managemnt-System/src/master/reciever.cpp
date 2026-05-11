@@ -260,15 +260,32 @@ bool extractJsonString(const char *json, const char *key, char *out, size_t outS
   return true;
 }
 
+// "Fault active" proxy derived from telemetry we already have on the wire.
+// The BQ76952 getProtectionStatus() isn't part of DeviceMessage (V1 keeps the
+// wire contract frozen), so this is a conservative guess: any cell outside
+// [2.5, 4.25] V or any temperature above the limits blocks OTA.
+bool deriveFaultFromMessage(const DeviceMessage &data)
+{
+  for (int i = 0; i < 16; i++)
+  {
+    unsigned int mv = data.v[i];
+    if (mv == 0) continue; // disconnected channel
+    if (mv < 2500 || mv > 4250) return true;
+  }
+  if (data.temp1 > 60.0f || data.temp2 > 60.0f || data.temp3 > 60.0f) return true;
+  if (data.chip_temp > 75.0f) return true;
+  return false;
+}
+
 // Walk every sender's snapshot and decide whether OTA is safe right now.
-// Outputs a human-readable reason on refusal for the serial log.
+// Writes a human-readable reason on refusal for the serial log.
 bool senderFleetSafeForOta(char *reason, size_t reasonSize)
 {
 #ifdef OTA_SKIP_SAFETY_CHECKS
   snprintf(reason, reasonSize, "safety checks disabled at build time");
   Serial.println("[OTA] ⚠ OTA_SKIP_SAFETY_CHECKS active — bypassing prechecks");
   return true;
-#endif
+#else
   for (int i = 0; i < NUM_SENDERS; i++)
   {
     if (!senderState[i].hasData)
@@ -289,6 +306,7 @@ bool senderFleetSafeForOta(char *reason, size_t reasonSize)
     }
   }
   return true;
+#endif
 }
 
 void performOta(const char *url, const char *version, const char *sha256)
@@ -483,35 +501,36 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
     return;
   }
 
+  int senderIndex = findSenderIndex(mac_addr);
+  if (senderIndex == -1)
+  {
+    Serial.printf("[ESP-NOW] ⚠️ Unknown sender MAC: %s\n", macToString(mac_addr).c_str());
+    return;
+  }
+
   DeviceMessage tempData;
   memcpy(&tempData, incomingData, sizeof(tempData));
   tempData.message[sizeof(tempData.message) - 1] = '\0';
 
-  int senderIndex = findSenderIndex(mac_addr);
-  String senderMac = macToString(mac_addr);
-
-  Serial.printf("[ESP-NOW] 📥 Received %d bytes from %s (Sender %d)\n", len, senderMac.c_str(), senderIndex + 1);
+  Serial.printf("[ESP-NOW] 📥 Received %d bytes from %s (Sender %d)\n",
+                len, macToString(mac_addr).c_str(), senderIndex + 1);
   Serial.printf("[ESP-NOW]   Cells: ");
   for (int i = 0; i < CONNECTED_CELLS; i++)
   {
     Serial.printf("V%d=%umV ", i + 1, tempData.v[i]);
   }
   Serial.println();
-  Serial.printf("[ESP-NOW]   Stack=%umV Pack=%umV Current=%dmA\n", tempData.v_stack, tempData.v_pack, tempData.current);
-  Serial.printf("[ESP-NOW]   Temps: chip=%.1fC t1=%.1fC t2=%.1fC t3=%.1fC\n", tempData.chip_temp, tempData.temp1, tempData.temp2, tempData.temp3);
-  Serial.printf("[ESP-NOW]   Charge=%.1fAh Time=%us Charging=%d Discharging=%d\n", tempData.charge, tempData.charge_time, tempData.isCharging, tempData.isDischarging);
+  Serial.printf("[ESP-NOW]   Stack=%umV Pack=%umV Current=%dmA\n",
+                tempData.v_stack, tempData.v_pack, tempData.current);
+  Serial.printf("[ESP-NOW]   Temps: chip=%.1fC t1=%.1fC t2=%.1fC t3=%.1fC\n",
+                tempData.chip_temp, tempData.temp1, tempData.temp2, tempData.temp3);
+  Serial.printf("[ESP-NOW]   Charge=%.1fAh Time=%us Charging=%d Discharging=%d\n",
+                tempData.charge, tempData.charge_time, tempData.isCharging, tempData.isDischarging);
   Serial.printf("[ESP-NOW]   Message: %s\n", tempData.message);
 
-  if (senderIndex != -1)
+  if (enqueueMessage(tempData, senderIndex))
   {
-    if (enqueueMessage(tempData, senderIndex))
-    {
-      Serial.printf("[ESP-NOW] ✅ Queued data from Sender %d\n", senderIndex + 1);
-    }
-  }
-  else
-  {
-    Serial.printf("[ESP-NOW] ⚠️ Unknown sender MAC: %s\n", senderMac.c_str());
+    Serial.printf("[ESP-NOW] ✅ Queued data from Sender %d\n", senderIndex + 1);
   }
 }
 
@@ -570,23 +589,6 @@ void setup()
   }
 
   Serial.println("[System] ✅ Master ready (MQTT + ESP-NOW)");
-}
-
-// Derive a "fault active" flag from the data we already have on the wire.
-// The slave's BQ76952 getProtectionStatus() isn't included in DeviceMessage
-// (V1 keeps the wire contract frozen), so this is a conservative proxy: any
-// cell outside [2.5, 4.25] V or any temperature above 60 C blocks OTA.
-bool deriveFaultFromMessage(const DeviceMessage &data)
-{
-  for (int i = 0; i < 16; i++)
-  {
-    unsigned int mv = data.v[i];
-    if (mv == 0) continue; // disconnected channel
-    if (mv < 2500 || mv > 4250) return true;
-  }
-  if (data.temp1 > 60.0f || data.temp2 > 60.0f || data.temp3 > 60.0f) return true;
-  if (data.chip_temp > 75.0f) return true;
-  return false;
 }
 
 void loop()

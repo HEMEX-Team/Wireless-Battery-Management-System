@@ -25,7 +25,7 @@ const uint32_t MQTT_RECONNECT_INTERVAL_MS = 5000;
 const char *const MQTT_CMD_TOPIC_PREFIX = "bms/cmd/";
 
 // ==================== OTA CONFIG ====================
-const char *const FW_VERSION = "0.1.0";
+const char *const FW_VERSION = "0.1.1";
 const float MIN_SOC_FOR_OTA = 30.0f;
 
 // ==================== HARDWARE CONFIG ====================

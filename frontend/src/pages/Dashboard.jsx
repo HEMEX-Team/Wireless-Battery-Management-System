@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Battery, BatteryCharging, Zap, AlertTriangle, Thermometer, Activity, History, Clock, TrendingUp, TrendingDown, AlertCircle, ExternalLink, Wifi, Home, BarChart3, RefreshCw, Plus, X, Trash2, LogOut, Layers, Unlink, Flame, Repeat, Moon, Gauge } from 'lucide-react';
+import { Battery, BatteryCharging, Zap, AlertTriangle, Activity, History, Clock, TrendingDown, AlertCircle, Home, BarChart3, RefreshCw, Plus, X, Trash2, LogOut, Layers, Unlink, Repeat, Moon, Gauge } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Legend, Tooltip, CartesianGrid, AreaChart, Area } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -657,338 +657,6 @@ const GroupCard = ({ group, onSeparate, onRemovePack }) => {
   );
 };
 
-// Inferno-style colormap (matches the reference image — black → purple → orange → yellow)
-const tempToInferno = (t, min = 0, max = 60) => {
-  const v = Math.max(0, Math.min(1, (t - min) / (max - min)));
-  const stops = [
-    { t: 0.00, c: [0, 0, 4] },
-    { t: 0.13, c: [31, 12, 72] },
-    { t: 0.25, c: [85, 15, 109] },
-    { t: 0.38, c: [136, 34, 106] },
-    { t: 0.50, c: [186, 54, 85] },
-    { t: 0.63, c: [227, 89, 51] },
-    { t: 0.75, c: [249, 140, 10] },
-    { t: 0.88, c: [249, 201, 50] },
-    { t: 1.00, c: [252, 255, 164] },
-  ];
-  for (let i = 0; i < stops.length - 1; i++) {
-    const a = stops[i], b = stops[i + 1];
-    if (v >= a.t && v <= b.t) {
-      const k = (v - a.t) / (b.t - a.t);
-      const r = Math.round(a.c[0] + (b.c[0] - a.c[0]) * k);
-      const g = Math.round(a.c[1] + (b.c[1] - a.c[1]) * k);
-      const bl = Math.round(a.c[2] + (b.c[2] - a.c[2]) * k);
-      return `rgb(${r},${g},${bl})`;
-    }
-  }
-  const last = stops[stops.length - 1].c;
-  return `rgb(${last[0]},${last[1]},${last[2]})`;
-};
-
-// Inferno color lookup that returns RGB triplets (for canvas pixel writes)
-const infernoRgb = (t, min = 0, max = 60) => {
-  const v = Math.max(0, Math.min(1, (t - min) / (max - min)));
-  const stops = [
-    { t: 0.00, c: [0, 0, 4] },
-    { t: 0.13, c: [31, 12, 72] },
-    { t: 0.25, c: [85, 15, 109] },
-    { t: 0.38, c: [136, 34, 106] },
-    { t: 0.50, c: [186, 54, 85] },
-    { t: 0.63, c: [227, 89, 51] },
-    { t: 0.75, c: [249, 140, 10] },
-    { t: 0.88, c: [249, 201, 50] },
-    { t: 1.00, c: [252, 255, 164] },
-  ];
-  for (let i = 0; i < stops.length - 1; i++) {
-    const a = stops[i], b = stops[i + 1];
-    if (v >= a.t && v <= b.t) {
-      const k = (v - a.t) / (b.t - a.t);
-      return [
-        Math.round(a.c[0] + (b.c[0] - a.c[0]) * k),
-        Math.round(a.c[1] + (b.c[1] - a.c[1]) * k),
-        Math.round(a.c[2] + (b.c[2] - a.c[2]) * k),
-      ];
-    }
-  }
-  return stops[stops.length - 1].c;
-};
-
-// Catmull-Rom interpolation across time samples for a single row, then bilinear
-// blending across rows for the vertical axis. Renders to a canvas at native
-// pixel resolution so the result looks like a real thermal image — no hard cells.
-const ThermalHeatmap = ({ history }) => {
-  const containerRef = useRef(null);
-  const canvasRef = useRef(null);
-  const [size, setSize] = useState({ w: 800, h: 280 });
-
-  // Observe container width so the canvas fills the available horizontal space
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) {
-        const w = Math.max(200, Math.floor(e.contentRect.width));
-        setSize((s) => (s.w === w ? s : { ...s, w }));
-      }
-    });
-    ro.observe(containerRef.current);
-    return () => ro.disconnect();
-  }, []);
-
-  const minT = 0;
-  const maxT = 60;
-  const data = history.slice(-200);
-  const cols = data.length;
-
-  const tempStatus = (t) => {
-    if (t >= 45) return { label: 'Hot', cls: 'text-rose-600' };
-    if (t >= 35) return { label: 'Warm', cls: 'text-amber-600' };
-    if (t >= 10) return { label: 'Normal', cls: 'text-emerald-600' };
-    return { label: 'Cool', cls: 'text-sky-600' };
-  };
-
-  const latest = data[data.length - 1] || { left: 0, middle: 0, right: 0, time: '' };
-  const latestArr = [latest.left, latest.middle, latest.right].filter(v => typeof v === 'number');
-  const avg = latestArr.length ? latestArr.reduce((a, b) => a + b, 0) / latestArr.length : 0;
-  const spread = latestArr.length ? Math.max(...latestArr) - Math.min(...latestArr) : 0;
-
-  // Catmull-Rom smoothstep over 1D array values at normalized position s ∈ [0,1]
-  const sampleSeries = (arr, s) => {
-    if (arr.length === 0) return 0;
-    if (arr.length === 1) return arr[0];
-    const x = s * (arr.length - 1);
-    const i = Math.floor(x);
-    const f = x - i;
-    const p0 = arr[Math.max(0, i - 1)];
-    const p1 = arr[i];
-    const p2 = arr[Math.min(arr.length - 1, i + 1)];
-    const p3 = arr[Math.min(arr.length - 1, i + 2)];
-    // Catmull-Rom
-    const t2 = f * f, t3 = t2 * f;
-    return 0.5 * (
-      (2 * p1) +
-      (-p0 + p2) * f +
-      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
-      (-p0 + 3 * p1 - 3 * p2 + p3) * t3
-    );
-  };
-
-  // Render the heatmap to canvas
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = size.w;
-    const H = size.h;
-    canvas.width = Math.floor(W * dpr);
-    canvas.height = Math.floor(H * dpr);
-    canvas.style.width = `${W}px`;
-    canvas.style.height = `${H}px`;
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    if (cols === 0) {
-      ctx.fillStyle = '#0b0b14';
-      ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '12px ui-sans-serif, system-ui';
-      ctx.textAlign = 'center';
-      ctx.fillText('Collecting thermal data...', W / 2, H / 2);
-      return;
-    }
-
-    // Sensor row positions in normalized [0,1] (top → bottom): Right, Middle, Left
-    // We'll do bilinear blending: vertical position picks weights between sensors.
-    const rowsTemps = {
-      right: data.map(d => (typeof d.right === 'number' ? d.right : 0)),
-      middle: data.map(d => (typeof d.middle === 'number' ? d.middle : 0)),
-      left: data.map(d => (typeof d.left === 'number' ? d.left : 0)),
-    };
-
-    // Sensor "anchor" Y positions (0=top, 1=bottom): Right=0.15, Middle=0.5, Left=0.85
-    const anchorYs = [
-      { y: 0.15, key: 'right' },
-      { y: 0.50, key: 'middle' },
-      { y: 0.85, key: 'left' },
-    ];
-
-    // Render an offscreen low-resolution buffer (one pixel per logical sample),
-    // then upscale with the browser's bilinear filter. Smooth + cheap.
-    const innerW = Math.max(2, Math.min(600, cols * 8));
-    const innerH = 96;
-    const buf = document.createElement('canvas');
-    buf.width = innerW;
-    buf.height = innerH;
-    const bctx = buf.getContext('2d');
-    const img = bctx.createImageData(innerW, innerH);
-
-    for (let y = 0; y < innerH; y++) {
-      const ny = y / (innerH - 1);
-      // Find blending weights between the three sensor anchors
-      // Smooth blend: we evaluate temperature at ny by interpolating between
-      // the two nearest anchors with a smoothstep.
-      let aIdx = 0;
-      for (let i = 0; i < anchorYs.length - 1; i++) {
-        if (ny >= anchorYs[i].y && ny <= anchorYs[i + 1].y) { aIdx = i; break; }
-        if (ny < anchorYs[0].y) { aIdx = 0; break; }
-        if (ny > anchorYs[anchorYs.length - 1].y) { aIdx = anchorYs.length - 2; break; }
-      }
-      const a = anchorYs[aIdx];
-      const b = anchorYs[aIdx + 1];
-      const localT = Math.max(0, Math.min(1, (ny - a.y) / (b.y - a.y)));
-      const smooth = localT * localT * (3 - 2 * localT);
-
-      for (let x = 0; x < innerW; x++) {
-        const nx = x / (innerW - 1);
-        const va = sampleSeries(rowsTemps[a.key], nx);
-        const vb = sampleSeries(rowsTemps[b.key], nx);
-        const t = va + (vb - va) * smooth;
-        const [r, g, bl] = infernoRgb(t, minT, maxT);
-        const idx = (y * innerW + x) * 4;
-        img.data[idx] = r;
-        img.data[idx + 1] = g;
-        img.data[idx + 2] = bl;
-        img.data[idx + 3] = 255;
-      }
-    }
-    bctx.putImageData(img, 0, 0);
-
-    // Background
-    ctx.fillStyle = '#0b0b14';
-    ctx.fillRect(0, 0, W, H);
-
-    // Heatmap area within canvas (leave some padding for the time axis at the bottom)
-    const padL = 70, padR = 14, padT = 10, padB = 28;
-    const hmW = W - padL - padR;
-    const hmH = H - padT - padB;
-
-    // Smooth upscale
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(buf, padL, padT, hmW, hmH);
-
-    // Subtle gridlines for the three sensor anchors
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = 1;
-    for (const a of anchorYs) {
-      const yPos = padT + a.y * hmH + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(padL, yPos);
-      ctx.lineTo(padL + hmW, yPos);
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    // Y-axis labels (sensor positions) — drawn in the left padding
-    ctx.fillStyle = '#9ca3af';
-    ctx.font = '600 11px ui-sans-serif, system-ui';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    for (const a of anchorYs) {
-      const yPos = padT + a.y * hmH;
-      const label = a.key.charAt(0).toUpperCase() + a.key.slice(1);
-      ctx.fillText(label, padL - 10, yPos);
-    }
-
-    // X-axis time ticks (5 evenly spaced)
-    const tickCount = Math.min(6, cols);
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.fillStyle = '#9ca3af';
-    ctx.font = '10px ui-monospace, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    for (let i = 0; i < tickCount; i++) {
-      const k = tickCount === 1 ? 0 : i / (tickCount - 1);
-      const xPos = padL + k * hmW;
-      ctx.beginPath();
-      ctx.moveTo(xPos + 0.5, padT + hmH);
-      ctx.lineTo(xPos + 0.5, padT + hmH + 4);
-      ctx.stroke();
-      const dataIdx = Math.round(k * (cols - 1));
-      const t = data[dataIdx]?.time || '';
-      ctx.fillText(t, xPos, padT + hmH + 6);
-    }
-  }, [size, history]);
-
-  return (
-    <div className="w-full">
-      {/* Header */}
-      <div className="flex items-baseline justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Flame className="h-4 w-4 text-rose-500" />
-          <h3 className="text-base font-semibold text-gray-900">Thermal Map</h3>
-          <span className="text-xs text-gray-400">· position vs time</span>
-        </div>
-        <div className="text-xs text-gray-500">
-          Avg <span className="font-semibold text-gray-900">{avg.toFixed(1)}°C</span>
-          <span className="mx-2 text-gray-300">|</span>
-          Δ <span className="font-semibold text-gray-900">{spread.toFixed(1)}°C</span>
-        </div>
-      </div>
-
-      <div className="flex items-stretch gap-3">
-        <div ref={containerRef} className="flex-1 rounded-lg overflow-hidden">
-          <canvas ref={canvasRef} style={{ display: 'block' }} />
-        </div>
-
-        {/* Vertical color scale */}
-        <div className="flex flex-col items-center" style={{ width: 50 }}>
-          <div className="text-[10px] text-gray-500 font-medium mb-1">°C</div>
-          <div className="flex-1 flex gap-1.5">
-            <div
-              className="w-4 rounded-sm"
-              style={{
-                background:
-                  'linear-gradient(to top, rgb(0,0,4), rgb(31,12,72), rgb(85,15,109), rgb(136,34,106), rgb(186,54,85), rgb(227,89,51), rgb(249,140,10), rgb(249,201,50), rgb(252,255,164))',
-              }}
-            />
-            <div className="flex flex-col justify-between text-[10px] text-gray-500 font-mono py-0.5">
-              <span>{maxT}</span>
-              <span>{Math.round((maxT + minT) * 0.75)}</span>
-              <span>{Math.round((maxT + minT) * 0.5)}</span>
-              <span>{Math.round((maxT + minT) * 0.25)}</span>
-              <span>{minT}</span>
-            </div>
-          </div>
-          <div className="pb-7" />
-        </div>
-      </div>
-
-      {/* Sensor readings */}
-      <div className="grid grid-cols-3 gap-3 mt-4">
-        {[
-          { position: 'Left', value: latest.left },
-          { position: 'Middle', value: latest.middle },
-          { position: 'Right', value: latest.right },
-        ].map((t, i) => {
-          const status = tempStatus(t.value || 0);
-          const [r, g, bl] = infernoRgb(t.value || 0, minT, maxT);
-          return (
-            <div key={i} className="flex items-center gap-3">
-              <div
-                className="h-8 w-8 rounded-md border border-gray-200"
-                style={{ background: `rgb(${r},${g},${bl})` }}
-              />
-              <div>
-                <div className="text-[10px] text-gray-400 font-medium uppercase tracking-wider flex items-center gap-1">
-                  <Thermometer className="h-3 w-3" />
-                  {t.position}
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-base font-bold text-gray-900">
-                    {(t.value || 0).toFixed(1)}<span className="text-xs font-normal text-gray-400 ml-0.5">°C</span>
-                  </span>
-                  <span className={`text-[10px] font-semibold ${status.cls}`}>{status.label}</span>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
 // =============================================================================
 // Helpers shared by the new stats cards
 // =============================================================================
@@ -1377,8 +1045,6 @@ const Dashboard = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
-  const [currentTime, setCurrentTime] = useState(new Date());
-  const [isConnected, setIsConnected] = useState(true);
   const [batteryPacks, setBatteryPacks] = useState([]);
   const [historicalData, setHistoricalData] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1451,19 +1117,9 @@ const Dashboard = () => {
     if (!confirm(`Separate group "${group.name}"? The packs themselves will remain.`)) return;
     try {
       await apiFetch(`/v1/groups/${group.id}`, { method: 'DELETE' });
-      // Reset combined chart + per-pack chart history for the separated packs
+      // Reset chart history so totals start fresh after the group is broken up.
       setRangeData([]);
-      setPackRangeData(prev => {
-        const next = { ...prev };
-        (group.pack_ids || []).forEach(pid => {
-          // pack ids in chart map are keyed by pack identifier from /packs/data/latest;
-          // clear any entry whose batteryPack id matches
-          const target = batteryPacks.find(p => p.id);
-          if (target) delete next[target.id];
-        });
-        // Also blanket-clear so totals/chart start fresh after disconnect
-        return {};
-      });
+      setPackRangeData({});
       lastRangeUpdate.current = null;
       fetchGroups();
     } catch (err) {
@@ -1491,7 +1147,6 @@ const Dashboard = () => {
       const data = await apiFetch('/v1/packs/data/latest');
 
       setBatteryPacks(data.packs || []);
-      setIsConnected(true);
 
       // Update historical data with new data point
       const now = new Date();
@@ -1583,16 +1238,9 @@ const Dashboard = () => {
       }
       console.error("Error fetching battery data:", err);
       setError(err.message);
-      setIsConnected(false);
       setLoading(false);
     }
   }, [logout, navigate]);
-
-  // Update current time
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Fetch user packs on mount
   useEffect(() => {
@@ -1766,82 +1414,6 @@ const Dashboard = () => {
     </div>
   );
 
-  // Battery Pack Card Component
-  const BatteryPackCard = ({ pack }) => {
-    const accentColor = {
-      safe: 'bg-emerald-500',
-      caution: 'bg-amber-500',
-      alert: 'bg-rose-500'
-    }[pack.status] || 'bg-gray-400';
-
-    const socColor = pack.soc > 50 ? 'bg-slate-700' : pack.soc > 20 ? 'bg-amber-500' : 'bg-rose-500';
-    const sohColor = pack.soh > 80 ? 'bg-slate-700' : pack.soh > 60 ? 'bg-amber-500' : 'bg-rose-500';
-
-    return (
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
-        {/* Thin accent bar */}
-        <div className={`h-0.5 ${accentColor}`} />
-
-        <div className="p-5">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-5">
-            <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-lg bg-slate-100 flex items-center justify-center">
-                <Battery className="h-5 w-5 text-slate-600" />
-              </div>
-              <div>
-                <h3 className="text-base font-semibold text-gray-900">{pack.name}</h3>
-                <p className="text-xs text-gray-400 font-mono">{pack.id}</p>
-              </div>
-            </div>
-            <StatusBadge status={pack.status} />
-          </div>
-
-          {/* SOC / SOH */}
-          <div className="grid grid-cols-2 gap-5 mb-5">
-            {[
-              { label: 'SOC', value: pack.soc, barColor: socColor },
-              { label: 'SOH', value: pack.soh, barColor: sohColor }
-            ].map(({ label, value, barColor }) => (
-              <div key={label}>
-                <div className="flex items-baseline justify-between mb-1.5">
-                  <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">{label}</span>
-                  <span className="text-xl font-bold text-gray-900">{value}%</span>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-1.5">
-                  <div className={`${barColor} h-1.5 rounded-full transition-all duration-300`} style={{ width: `${value}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Electrical readings */}
-          <div className="grid grid-cols-3 gap-3 mb-5">
-            {[
-              { label: 'Voltage', value: pack.voltage, unit: 'V' },
-              { label: 'Current', value: pack.current, unit: 'A' },
-              { label: 'Temp', value: pack.temp, unit: '°C' }
-            ].map(({ label, value, unit }) => (
-              <div key={label} className="bg-gray-50 rounded-lg px-3 py-2.5 text-center">
-                <div className="text-base font-bold text-gray-900">{value}<span className="text-xs font-normal text-gray-400 ml-0.5">{unit}</span></div>
-                <div className="text-[10px] text-gray-400 font-medium uppercase tracking-wider mt-0.5">{label}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* Cell grid */}
-          <BatteryGrid cells={pack.cells} config={pack.config} series={pack.series} parallel={pack.parallel} />
-
-          {/* Footer */}
-          <div className="flex items-center gap-1.5 mt-4 pt-3 border-t border-gray-100 text-[11px] text-gray-400">
-            <Clock className="h-3 w-3" />
-            <span>{currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}</span>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
   // Alarm History Component
   const AlarmHistory = ({ alarms, onClear }) => {
     const sevStyle = {
@@ -1944,7 +1516,7 @@ const Dashboard = () => {
       </div>
 
       {/* Battery % vs Miles Driven */}
-      <BatteryRangeChart data={memoizedRangeData} />
+      <BatteryRangeChart data={rangeData} />
 
       {/* Pack Groups (or fallback Pack) · Charge Stats · Pack Activity */}
       {batteryPacks.length > 0 && (
@@ -1971,12 +1543,12 @@ const Dashboard = () => {
           )}
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-gray-900">Charge Stats</h2>
-            <ChargeStatsCard pack={aggregatePack} chartData={memoizedRangeData} />
+            <ChargeStatsCard pack={aggregatePack} chartData={rangeData} />
           </div>
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-gray-900">Pack Activity</h2>
             <ActivityInsightsCard
-              rangeData={memoizedRangeData}
+              rangeData={rangeData}
               currentAmps={aggregatePack.current}
             />
           </div>
@@ -1999,10 +1571,6 @@ const Dashboard = () => {
       )}
     </div>
   );
-
-  // Memoize chart data to prevent unnecessary re-renders
-  const memoizedHistoricalData = useMemo(() => historicalData, [historicalData]);
-  const memoizedRangeData = useMemo(() => rangeData, [rangeData]);
 
   // Aggregate pack used by the dashboard-level Charge Stats / Pack Activity
   // cards. Falls back to safe zeros when there are no packs registered.
@@ -2206,7 +1774,7 @@ const Dashboard = () => {
           {activeTab === 'charts' && (
             <div className="space-y-6">
               <TrendChart
-                data={memoizedHistoricalData}
+                data={historicalData}
                 title="Voltage & Current Trends"
                 subtitle="Real-time electrical measurements"
                 dataKeys={[
@@ -2215,7 +1783,7 @@ const Dashboard = () => {
                 ]}
               />
               <TrendChart
-                data={memoizedHistoricalData}
+                data={historicalData}
                 title="Temperature Monitoring"
                 subtitle="Battery pack temperature over time"
                 dataKeys={[
@@ -2223,7 +1791,7 @@ const Dashboard = () => {
                 ]}
               />
               <TrendChart
-                data={memoizedHistoricalData}
+                data={historicalData}
                 title="Power Output"
                 subtitle="Calculated power (V × A)"
                 dataKeys={[

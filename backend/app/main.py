@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -22,6 +22,7 @@ logging.basicConfig(
     level=os.getenv("WBMS_LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+log = logging.getLogger("wbms.main")
 
 app = FastAPI(title="WBMS Backend", version="1.0.0")
 
@@ -30,8 +31,8 @@ app = FastAPI(title="WBMS Backend", version="1.0.0")
 def on_startup():
     try:
         Base.metadata.create_all(bind=engine)
-    except Exception as e:
-        print(f"Warning: Could not create tables on startup: {e}")
+    except Exception:
+        log.exception("Could not create tables on startup")
     start_mqtt()
 
 
@@ -71,5 +72,5 @@ async def root():
 async def health_check():
     return {
         "status": "Healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }

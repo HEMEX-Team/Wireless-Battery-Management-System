@@ -21,12 +21,16 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, []);
 
+  async function applyToken(accessToken) {
+    localStorage.setItem("wbms_token", accessToken);
+    const me = await apiFetch("/v1/auth/me");
+    setUser(me);
+  }
+
   async function login(email, password) {
     const body = new URLSearchParams({ username: email, password });
     const data = await apiFetch("/v1/auth/login", { method: "POST", body });
-    localStorage.setItem("wbms_token", data.access_token);
-    const me = await apiFetch("/v1/auth/me");
-    setUser(me);
+    await applyToken(data.access_token);
   }
 
   async function register(firstName, lastName, email, password) {
@@ -47,9 +51,7 @@ export function AuthProvider({ children }) {
       method: "POST",
       body: JSON.stringify({ credential }),
     });
-    localStorage.setItem("wbms_token", data.access_token);
-    const me = await apiFetch("/v1/auth/me");
-    setUser(me);
+    await applyToken(data.access_token);
   }
 
   function logout() {

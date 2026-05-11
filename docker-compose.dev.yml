@@ -1,0 +1,87 @@
+# Dev overlay for docker-compose.yml.
+#
+# Layers on top of the prod file — start it with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# What it does:
+#   - Backend: runs uvicorn with --reload, source bind-mounted, port 8000
+#     exposed on the host so /docs and /v1/* are reachable directly.
+#   - Frontend: stops the multi-stage build at the `build` stage (Node image
+#     with deps already installed), then runs Vite's dev server with HMR.
+#   - DB: uses a separate `dev-db-data` volume mounted at /app/dev-data
+#     (different path than prod's db-data:/app/data), so dev never writes
+#     into the prod data volume even if both compose stacks run on the
+#     same host.
+#   - Mosquitto: uses a dev-only config (mosquitto/dev-config/mosquitto.conf)
+#     with allow_anonymous true. Avoids the Windows bind-mount permission
+#     pain of getting the prod passwd file readable by the mosquitto user.
+#     Prod config under mosquitto/config/ is untouched.
+#
+# Requires Docker Compose v2.24+ for the `!override` tag.
+
+services:
+  backend:
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./backend:/app
+      - dev-db-data:/app/dev-data
+    environment:
+      # Dev DB lives at a different path than prod's /app/data so the prod
+      # mount inherited from docker-compose.yml is harmless and unused.
+      - WBMS_DATABASE_URL=sqlite:////app/dev-data/wbms.db
+      # Distinct secret so tokens issued in dev never validate against prod.
+      - WBMS_SECRET_KEY=dev-only-not-for-production-change-me
+      - WBMS_LOG_LEVEL=DEBUG
+      # Vite dev server origin — must match exactly for CORS preflight.
+      - FRONTEND_ORIGIN=http://localhost:5173
+      # MQTT — same broker, same creds (matches prod's mosquitto auth).
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+      - MQTT_TOPIC=bms/data
+      # Dev mosquitto allows anonymous connections — clear inherited creds.
+      - MQTT_USERNAME=
+      - MQTT_PASSWORD=
+      - CONNECTED_CELLS=3
+      - PARALLEL_COUNT=1
+      # Reuse the same OAuth client; redirect URIs already include localhost.
+      - GOOGLE_CLIENT_ID=1017515470953-bpdre0hbqc5r7ejsf4rr466ndbgv5isg.apps.googleusercontent.com
+
+  frontend:
+    # Stop at the Node build stage from the multi-stage Dockerfile — that
+    # image already has node_modules installed, so first boot is fast.
+    build:
+      context: ./frontend
+      target: build
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    working_dir: /app
+    # Replace the prod 8080:80 mapping (Vite listens on 5173 instead of 80).
+    ports: !override
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./frontend:/app
+      # Named volume preserves the image's pre-installed node_modules so the
+      # ./frontend bind mount above doesn't shadow them with the host's
+      # (potentially empty or platform-mismatched) node_modules.
+      - frontend-node-modules:/app/node_modules
+    environment:
+      # vite.config.js reads VITE_API_URL for its /v1 + /health proxy.
+      - VITE_API_URL=http://backend:8000
+      - VITE_GOOGLE_CLIENT_ID=1017515470953-bpdre0hbqc5r7ejsf4rr466ndbgv5isg.apps.googleusercontent.com
+    depends_on:
+      - backend
+
+  mosquitto:
+    # Replace the inherited volume list — prod's ./mosquitto/config bind
+    # would otherwise still be merged in alongside the dev one.
+    volumes: !override
+      - ./mosquitto/dev-config:/mosquitto/config
+      - mosquitto-data-dev:/mosquitto/data
+      - mosquitto-log-dev:/mosquitto/log
+
+volumes:
+  dev-db-data:
+  frontend-node-modules:
+  mosquitto-data-dev:
+  mosquitto-log-dev:

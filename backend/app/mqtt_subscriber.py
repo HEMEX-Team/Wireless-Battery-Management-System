@@ -42,7 +42,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import paho.mqtt.client as mqtt
@@ -96,8 +96,12 @@ def _estimate_soc(cell_voltages_v: list[float]) -> float:
     return max(0.0, min(100.0, pct))
 
 
-def _extract_cell_voltages_mv(payload: dict[str, Any]) -> dict[int, float]:
-    """Return {position: voltage_volts} for keys v1..v16 present in payload."""
+def _extract_cell_voltages(payload: dict[str, Any]) -> dict[int, float]:
+    """Return {position: voltage_volts} for keys v1..v16 present in payload.
+
+    Firmware reports cell voltages in millivolts; we convert to volts here so
+    the rest of the persistence path operates in SI units.
+    """
     cells: dict[int, float] = {}
     for i in range(1, 17):
         val = payload.get(f"v{i}")
@@ -109,7 +113,7 @@ def _extract_cell_voltages_mv(payload: dict[str, Any]) -> dict[int, float]:
             continue
         if mv <= 0:
             continue
-        cells[i] = mv / 1000.0  # mV → V
+        cells[i] = mv / 1000.0
     return cells
 
 
@@ -126,7 +130,7 @@ def _charging_discharging_flag(payload: dict[str, Any]) -> Optional[bool]:
 
 
 def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
-    cell_voltages = _extract_cell_voltages_mv(payload)
+    cell_voltages = _extract_cell_voltages(payload)
 
     # Pack-level electricals
     v_pack_mv = payload.get("vPack") or payload.get("vStack") or 0
@@ -158,7 +162,7 @@ def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
     soc = _estimate_soc(list(cell_voltages.values()))
     soh = 100.0  # no long-term health estimate yet
     power = v_real * current_a
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     reading = Reading(
         timestamp=now,

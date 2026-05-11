@@ -1,9 +1,6 @@
-import { useState } from 'react';
 import { Upload, Brain, BarChart3, Zap, Shield, Users, Clock, Globe } from 'lucide-react';
 
 export default function FeaturesPage() {
-  const [isProductOpen, setIsProductOpen] = useState(false);
-
   const features = [
     {
       icon: <Upload className="w-8 h-8 text-blue-500" />,
@@ -108,17 +105,6 @@ export default function FeaturesPage() {
         </div>
       </section>
 
-      {/* Mobile Menu Button - Hidden by default, can be implemented for mobile responsiveness */}
-      <div className="md:hidden fixed bottom-4 right-4">
-        <button
-          onClick={() => setIsProductOpen(!isProductOpen)}
-          className="bg-blue-600 text-white p-3 rounded-full shadow-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-        >
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
-        </button>
-      </div>
     </div>
   );
 }

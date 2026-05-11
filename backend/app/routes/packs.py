@@ -116,7 +116,6 @@ def get_latest_pack_data(
             voltage = f"{latest_reading.v_real:.2f}"
             current_val = f"{latest_reading.current:.2f}"
             temp = f"{latest_reading.temperature:.2f}"
-            power = latest_reading.power or (latest_reading.v_real * latest_reading.current)
 
             # Get latest voltage per cell position (correlated subquery to
             # avoid picking multiple rows from the same cell when several
@@ -164,10 +163,9 @@ def get_latest_pack_data(
             # Generate mock data when no real readings exist
             soc = random.randint(50, 100)
             soh = random.randint(90, 100)
-            v = round(random.uniform(3.2 * series, 4.2 * series) / series * series, 2)
-            voltage = str(v)
-            current_val = str(round(random.uniform(5.0, 15.0), 2))
-            temp = str(round(random.uniform(25.0, 40.0), 2))
+            voltage = f"{random.uniform(3.2 * series, 4.2 * series):.2f}"
+            current_val = f"{random.uniform(5.0, 15.0):.2f}"
+            temp = f"{random.uniform(25.0, 40.0):.2f}"
             cells = _mock_cells(total_cells)
             pack_status = "safe" if random.random() > 0.2 else "caution"
 

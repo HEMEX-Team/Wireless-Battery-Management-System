@@ -1,6 +1,5 @@
 #include <esp_now.h>
 #include <WiFi.h>
-#include <WiFiManager.h>
 #include <PubSubClient.h>
 #include <esp_wifi.h>
 #include "config.h"
@@ -75,35 +74,24 @@ String macToString(const uint8_t *mac)
 }
 
 // ==================== WIFI FUNCTIONS ====================
-WiFiManager wifiManager;
-
 bool initWiFi()
 {
-  // Hold BOOT button during startup to clear saved WiFi and re-enter setup portal
-  pinMode(WIFI_RESET_PIN, INPUT_PULLUP);
-  delay(100);
-  if (digitalRead(WIFI_RESET_PIN) == LOW)
+  WiFi.mode(WIFI_AP_STA);
+  Serial.printf("[WiFi] Connecting to '%s'...\n", WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT_MS)
   {
-    Serial.println("[WiFi] 🔄 Reset button held — clearing saved credentials");
-    wifiManager.resetSettings();
+    delay(250);
+    Serial.print(".");
   }
+  Serial.println();
 
-  WiFi.mode(WIFI_AP_STA);
-  wifiManager.setConfigPortalTimeout(180); // Portal stays open 3 minutes then gives up
-  wifiManager.setConnectTimeout(WIFI_TIMEOUT_MS / 1000);
-
-  Serial.println("[WiFi] Starting WiFi provisioning...");
-  Serial.println("[WiFi] If no saved network — connect your phone to 'WBMS-Setup' to configure");
-  bool connected = wifiManager.autoConnect("WBMS-Setup");
-
-  // Ensure AP_STA mode for ESP-NOW after WiFiManager may have changed it
-  WiFi.mode(WIFI_AP_STA);
-
-  if (connected)
+  if (WiFi.status() == WL_CONNECTED)
   {
     currentChannel = WiFi.channel();
     esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-    // Start discovery AP so slaves can find our channel
     WiFi.softAP(MASTER_AP_SSID, NULL, currentChannel);
     Serial.println("[WiFi] ✅ Connected!");
     Serial.printf("[WiFi] IP: %s, Channel: %d\n", WiFi.localIP().toString().c_str(), currentChannel);
@@ -111,8 +99,7 @@ bool initWiFi()
     return true;
   }
 
-  Serial.println("[WiFi] ❌ Portal timed out — running in ESP-NOW only mode");
-  // Still start discovery AP on fallback channel so slaves can sync
+  Serial.printf("[WiFi] ❌ Could not connect to '%s' — running in ESP-NOW only mode\n", WIFI_SSID);
   currentChannel = 6;
   WiFi.softAP(MASTER_AP_SSID, NULL, currentChannel);
   esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);

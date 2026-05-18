@@ -178,17 +178,24 @@ int scanForChannel()
 {
   Serial.printf("[WiFi] Scanning for master AP '%s' to detect channel...\n", MASTER_AP_SSID);
   int n = WiFi.scanNetworks();
+  Serial.printf("[WiFi] Scan found %d networks:\n", n);
+  int found = -1;
   for (int i = 0; i < n; i++)
   {
-    if (String(WiFi.SSID(i)) == MASTER_AP_SSID)
+    int ch = WiFi.channel(i);
+    int rssi = WiFi.RSSI(i);
+    Serial.printf("[WiFi]   %2d: SSID='%s' ch=%d rssi=%d\n", i, WiFi.SSID(i).c_str(), ch, rssi);
+    if (found < 0 && String(WiFi.SSID(i)) == MASTER_AP_SSID)
     {
-      int ch = WiFi.channel(i);
-      Serial.printf("[WiFi] Found master AP '%s' on channel %d\n", MASTER_AP_SSID, ch);
-      WiFi.scanDelete();
-      return ch;
+      found = ch;
     }
   }
   WiFi.scanDelete();
+  if (found >= 0)
+  {
+    Serial.printf("[WiFi] Found master AP '%s' on channel %d\n", MASTER_AP_SSID, found);
+    return found;
+  }
   Serial.printf("[WiFi] Master AP '%s' not found, using fallback channel %d\n", MASTER_AP_SSID, FALLBACK_CHANNEL);
   return FALLBACK_CHANNEL;
 }

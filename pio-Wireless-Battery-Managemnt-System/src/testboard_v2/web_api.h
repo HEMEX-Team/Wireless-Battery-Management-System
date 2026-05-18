@@ -784,13 +784,22 @@ void handleApiLog() {
   logCount = 0;
 }
 
+// BQ76952 FET_CONTROL subcommand 0x0097, 1-byte payload (TRM §12.5.6):
+//   bit 0 = DSG_OFF, bit 1 = PDSG_OFF, bit 2 = CHG_OFF, bit 3 = PCHG_OFF
+// "1" forces the FET off; "0" releases it so BQ autonomous control can enable it.
+static uint8_t fetControlMask = 0x00;
+static void writeFetControl(uint8_t mask) {
+  fetControlMask = mask;
+  bms.subCommandWriteData(0x0097, &mask, 1);
+}
+
 void handleApiCmd() {
   String action = server.arg("action");
   if (action == "chgOn") {
     Serial.println("=== CHG ON REQUEST ===");
     bms.CommandOnlysubCommand(0x001D); // 1. Clear Permanent Failures FIRST
     delay(20);
-    digitalWrite(TB_PIN_CFETOFF, LOW); // 2. Remove HW block. BQ will now natively turn it ON.
+    writeFetControl(fetControlMask & ~0x04); // 2. Release CHG_OFF bit (TRM §12.5.6)
 
     uint16_t stat = 0;
     for (int i = 0; i < 5; i++) {
@@ -809,7 +818,7 @@ void handleApiCmd() {
 
   } else if (action == "chgOff") {
     Serial.println("=== CHG OFF REQUEST ===");
-    digitalWrite(TB_PIN_CFETOFF, HIGH); // Force Hardware Block
+    writeFetControl(fetControlMask | 0x04); // Force CHG_OFF
     delay(50);
 
     uint16_t stat = bms.directCommandRead(0x7F);
@@ -821,7 +830,7 @@ void handleApiCmd() {
     Serial.println("=== DSG ON REQUEST ===");
     bms.CommandOnlysubCommand(0x001D); // 1. Clear Permanent Failures FIRST
     delay(20);
-    digitalWrite(TB_PIN_DFETOFF, LOW); // 2. Remove HW block. BQ will now natively turn it ON.
+    writeFetControl(fetControlMask & ~0x01); // 2. Release DSG_OFF bit
 
     uint16_t stat = 0;
     for (int i = 0; i < 5; i++) {
@@ -840,7 +849,7 @@ void handleApiCmd() {
 
   } else if (action == "dsgOff") {
     Serial.println("=== DSG OFF REQUEST ===");
-    digitalWrite(TB_PIN_DFETOFF, HIGH); // Force Hardware Block
+    writeFetControl(fetControlMask | 0x01); // Force DSG_OFF
     delay(50);
 
     uint16_t stat = bms.directCommandRead(0x7F);
@@ -853,8 +862,7 @@ void handleApiCmd() {
     Serial.println("=== ALL FETS ON (EXIT MAINTENANCE) ===");
     bms.CommandOnlysubCommand(0x001D);
     delay(20);
-    digitalWrite(TB_PIN_CFETOFF, LOW);
-    digitalWrite(TB_PIN_DFETOFF, LOW);
+    writeFetControl(0x00); // Release all FET force-off bits
     delay(100);
     uint16_t stat = bms.directCommandRead(0x7F);
     isCharging = (stat & 0x01) != 0;
@@ -872,8 +880,7 @@ void handleApiCmd() {
 
   } else if (action == "allFetsOff") {
     Serial.println("=== ALL FETS OFF (ENTER MAINTENANCE) ===");
-    digitalWrite(TB_PIN_CFETOFF, HIGH);
-    digitalWrite(TB_PIN_DFETOFF, HIGH);
+    writeFetControl(0x05); // CHG_OFF | DSG_OFF
     delay(100);
     uint16_t stat = bms.directCommandRead(0x7F);
     isCharging = (stat & 0x01) != 0;

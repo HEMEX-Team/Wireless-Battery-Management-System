@@ -5,11 +5,11 @@
 #include <stddef.h>
 
 // ==================== NETWORK CONFIG ====================
-// WiFi credentials are managed by WiFiManager (captive portal) on the master.
-// No hardcoded SSID/password needed — stored in NVS after first-time setup.
+const char *const WIFI_SSID = "PE_Lab";
+const char *const WIFI_PASSWORD = "P0werM0$FET";
 
 const char *const MASTER_AP_SSID = "WBMS-Node"; // Soft AP the slave scans to discover the master's WiFi channel
-const int WIFI_RESET_PIN = 0;                    // BOOT button on ESP32 DevKit V1 — hold on startup to reset WiFi
+const int WIFI_RESET_PIN = 0;                    // BOOT button on ESP32 DevKit V1 — unused with hardcoded creds
 
 const uint32_t WIFI_TIMEOUT_MS = 15000;
 const uint32_t WIFI_RETRY_INTERVAL_MS = 10000;
@@ -36,15 +36,15 @@ const int I2C_SCL_PIN = 13;
 // per-cell voltage reads — only current/Ah scaling on the consumer side.
 #define CONNECTED_CELLS 13
 
-const uint8_t RECEIVER_ADDRESS[] = {0x3C, 0x8A, 0x1F, 0x0C, 0xD5, 0x28};
+const uint8_t RECEIVER_ADDRESS[] = {0x80, 0xF3, 0xDA, 0x54, 0x69, 0x30};
 
 const uint8_t SENDER_ADDRESSES[][6] = {
-    {0x08, 0xD1, 0xF9, 0x27, 0xAF, 0x28},
+    {0x30, 0xED, 0xA0, 0xBB, 0x9A, 0x00},
 };
 const int NUM_SENDERS = sizeof(SENDER_ADDRESSES) / sizeof(SENDER_ADDRESSES[0]);
 
 // ==================== SLAVE CONFIG ====================
-const int FALLBACK_CHANNEL = 6;
+const int FALLBACK_CHANNEL = 1; // PE_Lab router channel — match master's actual WiFi channel
 const int FAILURE_THRESHOLD = 10; // Consecutive send failures before fallback AP starts
 const char *const FALLBACK_AP_SSID = "WBMS-Slave-Direct";
 const char *const FALLBACK_AP_PASS = "wbms1234";

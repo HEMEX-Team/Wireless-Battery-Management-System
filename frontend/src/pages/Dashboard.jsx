@@ -36,54 +36,110 @@ const ErrorMessage = ({ message }) => (
 );
 
 // Battery Grid Component
+// Renders an S × P cell layout: S series positions across, P parallel cells
+// stacked per column. Parallel cells in a string share voltage in real life,
+// so when the backend only delivers one reading per series position we
+// replicate it down the column (and when it delivers padded zeros for the
+// extra parallel slots we collapse to the real per-series value).
 const BatteryGrid = ({ cells, config, series, parallel }) => {
   const s = parseInt(series) || 13;
-  const p = parseInt(parallel) || 4;
+  const p = parseInt(parallel) || 1;
+
+  // Collapse raw readings into one voltage per series position.
+  const seriesCells = useMemo(() => {
+    const out = [];
+    for (let col = 0; col < s; col++) {
+      // Prefer a non-zero reading from any of the p positions for this column.
+      let pick = null;
+      for (let row = 0; row < p; row++) {
+        const c = cells[row * s + col] ?? cells[col];
+        if (!c) continue;
+        const v = parseFloat(c.value);
+        if (!Number.isNaN(v) && v > 0) { pick = c; break; }
+        if (!pick) pick = c;
+      }
+      out.push(pick || { value: '0.00', status: 'safe' });
+    }
+    return out;
+  }, [cells, s, p]);
 
   const cellStats = useMemo(() => ({
-    safe: cells.filter(c => c.status === 'safe').length,
-    caution: cells.filter(c => c.status === 'caution').length,
-    alert: cells.filter(c => c.status === 'alert').length
-  }), [cells]);
+    safe: seriesCells.filter(c => c.status === 'safe').length,
+    caution: seriesCells.filter(c => c.status === 'caution').length,
+    alert: seriesCells.filter(c => c.status === 'alert').length,
+  }), [seriesCells]);
 
-  const getCellBg = (status) => {
-    switch(status) {
-      case 'safe': return 'bg-slate-100 text-slate-700 border-slate-200';
-      case 'caution': return 'bg-amber-50 text-amber-700 border-amber-300';
-      case 'alert': return 'bg-rose-50 text-rose-700 border-rose-300';
-      default: return 'bg-gray-100 text-gray-500 border-gray-200';
+  const cellStyle = (status) => {
+    switch (status) {
+      case 'safe':
+        return 'bg-gradient-to-b from-emerald-50 to-emerald-100/70 text-emerald-800 border-emerald-300/80 shadow-emerald-100';
+      case 'caution':
+        return 'bg-gradient-to-b from-amber-50 to-amber-100/80 text-amber-800 border-amber-300 shadow-amber-100';
+      case 'alert':
+        return 'bg-gradient-to-b from-rose-50 to-rose-100/80 text-rose-800 border-rose-300 shadow-rose-100';
+      default:
+        return 'bg-gray-50 text-gray-500 border-gray-200';
     }
   };
 
-  const getLegendDot = (status) => ({
-    safe: 'bg-slate-400',
+  const terminalColor = (status) => ({
+    safe: 'bg-emerald-300/80',
+    caution: 'bg-amber-300',
+    alert: 'bg-rose-300',
+  }[status] || 'bg-gray-300');
+
+  const legendDot = (status) => ({
+    safe: 'bg-emerald-400',
     caution: 'bg-amber-400',
     alert: 'bg-rose-400',
   }[status] || 'bg-gray-300');
 
+  const totalCells = s * p;
+  const headerConfig = `${s}S${p}P (${totalCells} cell${totalCells === 1 ? '' : 's'})`;
+  // Tighten cell height as the parallel stack grows so the whole grid stays compact.
+  const cellHeight = p >= 4 ? 'h-7' : p === 3 ? 'h-8' : p === 2 ? 'h-9' : 'h-11';
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between text-xs text-gray-400 font-medium">
-        <span>{config || `${s}S${p}P (${cells.length} cells)`}</span>
-        <span>{s}S x {p}P</span>
+        <span>{config || headerConfig}</span>
+        <span className="tabular-nums">{s}S × {p}P</span>
       </div>
-      <div className="grid gap-1" style={{gridTemplateColumns: `repeat(${s}, minmax(0, 1fr))`}}>
-        {cells.map((cell, index) => (
-          <div
-            key={index}
-            className={`h-8 rounded border flex items-center justify-center transition-colors cursor-default ${getCellBg(cell.status)}`}
-            title={`Cell ${index + 1}: ${cell.value}V`}
-          >
-            <span className="text-[10px] font-mono font-semibold leading-none">
-              {cell.value}
-            </span>
+
+      <div
+        className="grid gap-1.5"
+        style={{ gridTemplateColumns: `repeat(${s}, minmax(0, 1fr))` }}
+      >
+        {seriesCells.map((cell, col) => (
+          <div key={col} className="flex flex-col items-stretch gap-1 min-w-0">
+            <div className="text-[9px] text-center text-gray-400 font-semibold leading-none tabular-nums">
+              {col + 1}
+            </div>
+            <div className="relative flex flex-col gap-1">
+              {/* Battery terminal nub at top of the column */}
+              <div
+                className={`absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-1 rounded-t ${terminalColor(cell.status)}`}
+              />
+              {Array.from({ length: p }).map((_, row) => (
+                <div
+                  key={row}
+                  className={`${cellHeight} rounded-md border flex items-center justify-center shadow-sm transition-all ${cellStyle(cell.status)}`}
+                  title={`S${col + 1}${p > 1 ? `·P${row + 1}` : ''}: ${cell.value} V`}
+                >
+                  <span className="text-[10px] font-mono font-bold leading-none tabular-nums">
+                    {cell.value}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         ))}
       </div>
+
       <div className="flex items-center gap-4 text-xs text-gray-500">
         {Object.entries(cellStats).map(([status, count]) => (
           <div key={status} className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${getLegendDot(status)}`}></div>
+            <div className={`w-2 h-2 rounded-full ${legendDot(status)}`}></div>
             <span>{status.charAt(0).toUpperCase() + status.slice(1)} ({count})</span>
           </div>
         ))}

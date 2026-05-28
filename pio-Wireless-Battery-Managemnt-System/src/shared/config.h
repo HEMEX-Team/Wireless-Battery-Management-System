@@ -59,7 +59,7 @@ typedef struct
 {
   unsigned int v[16];
   unsigned int v_stack;
-  unsigned int v_pack;
+  unsigned int v_ ack;
   int current;
   float chip_temp;
   float temp1;

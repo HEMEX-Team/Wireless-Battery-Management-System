@@ -34,7 +34,7 @@ class Pack(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False, index=True)
     pack_identifier = Column(String(50), unique=True, nullable=False, index=True)
-    pairing_code = Column(String(10), unique=True, nullable=False, index=True)
+    pairing_code = Column(String(50), unique=True, nullable=False, index=True)
     # Master ESP32's own pairing code (last 3 bytes of its MAC). Distinct
     # from `pairing_code`, which is the slave's. Populated when the master
     # first sends telemetry containing `masterPairingCode`. Used as the MQTT

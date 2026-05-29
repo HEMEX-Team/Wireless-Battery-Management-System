@@ -25,3 +25,4 @@ SQLAlchemy==2.0.41
 email-validator==2.2.0
 paho-mqtt==2.1.0
 httpx==0.27.2
+psycopg2-binary==2.9.10

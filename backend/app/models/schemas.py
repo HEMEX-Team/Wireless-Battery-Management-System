@@ -46,6 +46,8 @@ class PackResponse(BaseModel):
     name: str
     pack_identifier: str
     pairing_code: str
+    master_pairing_code: Optional[str] = None
+    master_firmware_version: Optional[str] = None
     series_count: int
     parallel_count: int
     user_id: Optional[int] = None
@@ -53,6 +55,21 @@ class PackResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FirmwareImageResponse(BaseModel):
+    id: int
+    version: str
+    sha256: str
+    size: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FirmwareDispatchRequest(BaseModel):
+    firmware_image_id: int
 
 
 class ReadingCreate(BaseModel):

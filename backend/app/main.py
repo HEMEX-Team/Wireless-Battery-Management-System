@@ -10,10 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 from app.models.database import engine, Base
+from app.models.init_db import apply_lightweight_migrations
 from app.mqtt_subscriber import start_mqtt, stop_mqtt
 from app.routes.auth import router as auth_router
 from app.routes.packs import router as packs_router
 from app.routes.groups import router as groups_router
+from app.routes.firmware import router as firmware_router
 
 # Import models so Base knows about them
 from app.models import models  # noqa: F401
@@ -31,6 +33,7 @@ app = FastAPI(title="WBMS Backend", version="1.0.0")
 def on_startup():
     try:
         Base.metadata.create_all(bind=engine)
+        apply_lightweight_migrations(engine)
     except Exception:
         log.exception("Could not create tables on startup")
     start_mqtt()
@@ -61,6 +64,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(packs_router)
 app.include_router(groups_router)
+app.include_router(firmware_router)
 
 
 @app.get("/")

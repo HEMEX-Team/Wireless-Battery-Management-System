@@ -64,7 +64,13 @@ MQTT_TOPIC = os.getenv("MQTT_TOPIC", "bms/data")
 MQTT_USERNAME = os.getenv("MQTT_USERNAME") or None
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD") or None
 MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "wbms-backend")
+MQTT_CMD_TOPIC_PREFIX = os.getenv("MQTT_CMD_TOPIC_PREFIX", "bms/cmd/")
 CONNECTED_CELLS_DEFAULT = int(os.getenv("CONNECTED_CELLS", "3"))
+
+# OTA-related config — read here so all MQTT-adjacent settings live together.
+FIRMWARE_DIR = os.getenv("FIRMWARE_DIR", "./firmware_artifacts")
+OTA_URL_SECRET = os.getenv("OTA_URL_SECRET", "dev-ota-secret-change-in-production")
+OTA_BLOB_TTL_SECONDS = int(os.getenv("OTA_BLOB_TTL_SECONDS", "300"))
 
 # Nominal LiFePO4/Li-ion SOC curve endpoints (volts per cell)
 _CELL_V_EMPTY = 3.0
@@ -127,6 +133,32 @@ def _charging_discharging_flag(payload: dict[str, Any]) -> Optional[bool]:
     if payload.get("isDischarging"):
         return False
     return None
+
+
+def _update_master_metadata(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
+    """Refresh fields the master self-reports in telemetry (fw version, its
+    own pairing code). Only writes when the reported value differs to keep
+    commit churn down — telemetry arrives at 2 Hz.
+    """
+    changed = False
+
+    fw = payload.get("fwVersion")
+    if isinstance(fw, str) and fw.strip():
+        fw = fw.strip()
+        if pack.master_firmware_version != fw:
+            pack.master_firmware_version = fw
+            changed = True
+
+    mpc = payload.get("masterPairingCode")
+    if isinstance(mpc, str) and mpc.strip():
+        mpc = mpc.strip().upper()
+        if pack.master_pairing_code != mpc:
+            pack.master_pairing_code = mpc
+            changed = True
+
+    if changed:
+        db.commit()
+        db.refresh(pack)
 
 
 def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
@@ -261,6 +293,7 @@ def _handle_payload(raw: bytes) -> None:
                 except (TypeError, ValueError):
                     pass
 
+        _update_master_metadata(db, pack, payload)
         _persist_reading(db, pack, payload)
     except Exception:
         db.rollback()
@@ -343,3 +376,30 @@ def stop_mqtt() -> None:
             log.exception("Error while stopping MQTT client")
         _client = None
         log.info("MQTT subscriber stopped")
+
+
+def publish_command(pairing_code: str, payload: dict[str, Any]) -> bool:
+    """Publish a command payload to `bms/cmd/<pairing_code>` over the shared
+    MQTT client. Returns True on enqueue success.
+
+    Used by the OTA dispatch route. The client may not be connected yet —
+    paho will retry the underlying socket, and a publish before connection
+    is queued by paho when `loop_start()` is running.
+    """
+    code = (pairing_code or "").strip().upper()
+    if not code:
+        log.warning("publish_command called with empty pairing_code")
+        return False
+
+    with _client_lock:
+        client = _client
+
+    if client is None:
+        log.warning("publish_command: MQTT client not started")
+        return False
+
+    topic = f"{MQTT_CMD_TOPIC_PREFIX}{code}"
+    body = json.dumps(payload, separators=(",", ":"))
+    info = client.publish(topic, body, qos=1)
+    log.info("MQTT command -> %s (%d bytes), rc=%s", topic, len(body), info.rc)
+    return info.rc == mqtt.MQTT_ERR_SUCCESS

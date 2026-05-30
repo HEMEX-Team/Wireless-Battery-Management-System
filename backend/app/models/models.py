@@ -34,7 +34,15 @@ class Pack(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False, index=True)
     pack_identifier = Column(String(50), unique=True, nullable=False, index=True)
-    pairing_code = Column(String(10), unique=True, nullable=False, index=True)
+    pairing_code = Column(String(50), unique=True, nullable=False, index=True)
+    # Master ESP32's own pairing code (last 3 bytes of its MAC). Distinct
+    # from `pairing_code`, which is the slave's. Populated when the master
+    # first sends telemetry containing `masterPairingCode`. Used as the MQTT
+    # command-topic suffix for OTA dispatch.
+    master_pairing_code = Column(String(10), nullable=True, index=True)
+    # Firmware version reported by the master in the most recent telemetry
+    # message. Frontend uses this to detect when an OTA has landed.
+    master_firmware_version = Column(String(32), nullable=True)
     series_count = Column(Integer, nullable=False, default=3)
     parallel_count = Column(Integer, nullable=False, default=1)
     user_id = Column(
@@ -112,6 +120,17 @@ class Reading(Base):
     __table_args__ = (
         Index('idx_pack_timestamp', 'pack_id', 'timestamp'),
     )
+
+class FirmwareImage(Base):
+    __tablename__ = "firmware_images"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(String(32), unique=True, nullable=False, index=True)
+    sha256 = Column(String(64), nullable=False)
+    size = Column(Integer, nullable=False)
+    artifact_path = Column(String(512), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
 
 class BatteryReading(Base):
     __tablename__ = "battery_readings"

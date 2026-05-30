@@ -72,26 +72,6 @@ class FirmwareDispatchRequest(BaseModel):
     firmware_image_id: int
 
 
-class ReadingCreate(BaseModel):
-    pack_id: int
-    v_real: float
-    current: float
-    temperature: float
-    cycles: int
-    v_estimated: float
-    soc: float
-    soh: float
-    ekf_soc: float
-    power: Optional[float] = None
-    charging_discharging: Optional[bool] = None
-
-
-class BatteryReadingCreate(BaseModel):
-    battery_position: int
-    pack_id: int
-    voltage: float
-
-
 class GroupCreate(BaseModel):
     name: str
     connection_type: Literal["parallel", "series"] = "parallel"

@@ -13,6 +13,11 @@ from app.routes.firmware import dispatch_ota
 
 router = APIRouter(prefix="/v1/packs", tags=["packs"])
 
+# A pack that hasn't sent telemetry within this window is treated as offline.
+# Its last real reading is still returned, but flagged `stale` so the UI can
+# label it instead of presenting frozen values as if they were live.
+STALE_AFTER_SECONDS = 30
+
 
 @router.post("", response_model=PackResponse, status_code=status.HTTP_201_CREATED)
 def create_pack(
@@ -107,12 +112,18 @@ def get_latest_pack_data(
     db: Session = Depends(get_db),
 ):
     packs = db.query(Pack).filter(Pack.user_id == current_user.id).all()
+    now_utc = datetime.utcnow()
 
     battery_packs = []
     for pack in packs:
         series = pack.series_count
         parallel = pack.parallel_count
         total_cells = series * parallel
+
+        # Stable per-pack RNG so any fabricated/demo values are identical on
+        # every poll (seeded by the pack's id) instead of jittering each time,
+        # which would otherwise read as a broken live feed.
+        rng = random.Random(pack.id)
 
         # Try to get latest real reading from DB
         latest_reading = (
@@ -123,11 +134,25 @@ def get_latest_pack_data(
         )
 
         if latest_reading:
+            demo = False
+            age_s = (now_utc - latest_reading.timestamp).total_seconds()
+            stale = age_s > STALE_AFTER_SECONDS
+            last_update = latest_reading.timestamp.replace(microsecond=0).isoformat() + "Z"
             soc = int(latest_reading.soc)
             soh = int(latest_reading.soh)
             voltage = f"{latest_reading.v_real:.2f}"
             current_val = f"{latest_reading.current:.2f}"
             temp = f"{latest_reading.temperature:.2f}"
+
+            # Spatial thermistor values for the heatmap. Use the real per-sensor
+            # readings when the firmware reported them; otherwise spread the
+            # single mean temp across all three (renders flat = "no spatial
+            # data" rather than a fabricated gradient).
+            t1, t2, t3 = latest_reading.temp1, latest_reading.temp2, latest_reading.temp3
+            if t1 is not None and t2 is not None and t3 is not None:
+                thermistors = [{"value": f"{t1:.2f}"}, {"value": f"{t2:.2f}"}, {"value": f"{t3:.2f}"}]
+            else:
+                thermistors = [{"value": temp}, {"value": temp}, {"value": temp}]
 
             # Get latest voltage per cell position (correlated subquery to
             # avoid picking multiple rows from the same cell when several
@@ -164,7 +189,7 @@ def get_latest_pack_data(
                 # Truncate if pack was shrunk
                 cells = cells[:total_cells]
             else:
-                cells = _mock_cells(total_cells)
+                cells = _mock_cells(total_cells, rng)
 
             pack_status = "safe"
             if soc < 20 or soh < 80:
@@ -172,14 +197,28 @@ def get_latest_pack_data(
             elif soc < 40 or soh < 90:
                 pack_status = "caution"
         else:
-            # Generate mock data when no real readings exist
-            soc = random.randint(50, 100)
-            soh = random.randint(90, 100)
-            voltage = f"{random.uniform(3.2 * series, 4.2 * series):.2f}"
-            current_val = f"{random.uniform(5.0, 15.0):.2f}"
-            temp = f"{random.uniform(25.0, 40.0):.2f}"
-            cells = _mock_cells(total_cells)
-            pack_status = "safe" if random.random() > 0.2 else "caution"
+            # No telemetry yet (e.g. a manually-added or not-yet-connected
+            # pack, or a fake pairing code). Show a STABLE, clearly-labeled
+            # demo preview so the card isn't empty — the frontend renders a
+            # "DEMO" badge for these rather than passing them off as live.
+            demo = True
+            stale = False
+            last_update = None
+            soc = rng.randint(50, 100)
+            soh = rng.randint(90, 100)
+            voltage = f"{rng.uniform(3.2 * series, 4.2 * series):.2f}"
+            current_val = f"{rng.uniform(5.0, 15.0):.2f}"
+            base_temp = rng.uniform(25.0, 40.0)
+            temp = f"{base_temp:.2f}"
+            # Stable per-pack spatial spread (middle runs hotter, like a real
+            # pack) so the demo heatmap looks plausible and doesn't jitter.
+            thermistors = [
+                {"value": f"{base_temp + rng.uniform(-2.0, 1.0):.2f}"},
+                {"value": f"{base_temp + rng.uniform(1.0, 3.0):.2f}"},
+                {"value": f"{base_temp + rng.uniform(-2.0, 1.0):.2f}"},
+            ]
+            cells = _mock_cells(total_cells, rng)
+            pack_status = "safe"
 
         battery_packs.append({
             "name": pack.name,
@@ -194,6 +233,10 @@ def get_latest_pack_data(
             "series": str(series),
             "parallel": str(parallel),
             "cells": cells,
+            "thermistors": thermistors,
+            "demo": demo,
+            "stale": stale,
+            "last_update": last_update,
         })
 
     return {
@@ -203,10 +246,10 @@ def get_latest_pack_data(
     }
 
 
-def _mock_cells(count: int) -> list:
+def _mock_cells(count: int, rng: random.Random) -> list:
     cells = []
     for _ in range(count):
-        cell_voltage = round(random.uniform(3.2, 4.2), 2)
+        cell_voltage = round(rng.uniform(3.2, 4.2), 2)
         cell_status = "caution" if cell_voltage < 3.3 or cell_voltage > 4.1 else "safe"
         cells.append({"value": f"{cell_voltage:.2f}", "status": cell_status})
     return cells

@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -26,22 +27,21 @@ logging.basicConfig(
 )
 log = logging.getLogger("wbms.main")
 
-app = FastAPI(title="WBMS Backend", version="1.0.0")
-
-
-@app.on_event("startup")
-def on_startup():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Startup
     try:
         Base.metadata.create_all(bind=engine)
         apply_lightweight_migrations(engine)
     except Exception:
         log.exception("Could not create tables on startup")
     start_mqtt()
-
-
-@app.on_event("shutdown")
-def on_shutdown():
+    yield
+    # Shutdown
     stop_mqtt()
+
+
+app = FastAPI(title="WBMS Backend", version="1.0.0", lifespan=lifespan)
 
 
 # CORS — allow the configured frontend origin plus local dev hosts.

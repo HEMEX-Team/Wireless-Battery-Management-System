@@ -22,6 +22,34 @@ const StatusBadge = ({ status }) => {
   );
 };
 
+// Small pill for cards whose data is a placeholder preview, not a live device.
+const DemoBadge = () => (
+  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide bg-amber-100 text-amber-700 border border-amber-300">
+    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+    Demo
+  </span>
+);
+
+// Format a wattage with a sensible unit (W under 1 kW, kW above).
+const formatPower = (watts) => {
+  const w = Number(watts) || 0;
+  return Math.abs(w) >= 1000 ? `${(w / 1000).toFixed(2)} kW` : `${w.toFixed(0)} W`;
+};
+
+// Compact "x ago" for stale/offline timestamps. Returns '' on bad/empty input.
+const timeAgo = (iso) => {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+};
+
 const LoadingSpinner = () => (
   <div className="flex items-center justify-center p-8">
     <RefreshCw className="h-8 w-8 text-blue-500 animate-spin" />
@@ -622,7 +650,7 @@ const GroupCard = ({ group, onSeparate, onRemovePack }) => {
   const sohColor = group.soh > 80 ? 'bg-slate-700' : group.soh > 60 ? 'bg-amber-500' : 'bg-rose-500';
 
   return (
-    <div className="bg-white rounded-xl border-2 border-blue-200 shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
+    <div className={`bg-white rounded-xl border-2 shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden ${group.demo ? 'border-amber-300' : 'border-blue-200'}`}>
       <div className={`h-0.5 ${accentColor}`} />
 
       <div className="p-5">
@@ -642,6 +670,7 @@ const GroupCard = ({ group, onSeparate, onRemovePack }) => {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {group.demo && <DemoBadge />}
             <StatusBadge status={group.status} />
             <button
               onClick={() => onSeparate(group)}
@@ -848,9 +877,12 @@ const deriveActivityEvents = (series) => {
 // Charge Stats Card — renders next to the pack configuration card
 // =============================================================================
 const ChargeStatsCard = ({ pack, chartData }) => {
+  // Pull out the two primitives the memo actually uses so the dependency list
+  // is exact (and lint-clean) without re-running when other pack fields churn.
+  const { soc, current } = pack;
   const stats = useMemo(
-    () => deriveChargeStats(chartData, pack.soc, pack.current),
-    [chartData, pack.soc, pack.current]
+    () => deriveChargeStats(chartData, soc, current),
+    [chartData, soc, current]
   );
 
   const rows = [
@@ -1019,21 +1051,29 @@ const PackSummaryCard = ({ pack }) => {
   const sohColor = pack.soh > 80 ? 'bg-slate-700' : pack.soh > 60 ? 'bg-amber-500' : 'bg-rose-500';
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className={`bg-white rounded-xl border shadow-sm overflow-hidden ${pack.demo ? 'border-amber-300 ring-1 ring-amber-100' : pack.stale ? 'border-slate-300' : 'border-gray-200'}`}>
       <div className={`h-0.5 ${accentColor}`} />
 
       <div className="p-5">
         <div className="flex items-center justify-between mb-5">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-lg bg-slate-100 flex items-center justify-center">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-10 w-10 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
               <Battery className="h-5 w-5 text-slate-600" />
             </div>
-            <div>
-              <h3 className="text-base font-semibold text-gray-900">{pack.name}</h3>
-              <p className="text-xs text-gray-400 font-mono">{pack.id}</p>
+            <div className="min-w-0">
+              <h3 className="text-base font-semibold text-gray-900 truncate">{pack.name}</h3>
+              <p className="text-xs text-gray-400 font-mono truncate">{pack.id}</p>
             </div>
           </div>
-          <StatusBadge status={pack.status} />
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {pack.demo && <DemoBadge />}
+            {!pack.demo && pack.stale && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide bg-slate-100 text-slate-600 border border-slate-300">
+                Offline
+              </span>
+            )}
+            <StatusBadge status={pack.status} />
+          </div>
         </div>
 
         {/* SOC / SOH */}
@@ -1070,6 +1110,19 @@ const PackSummaryCard = ({ pack }) => {
 
         {/* Cell grid */}
         <BatteryGrid cells={pack.cells} config={pack.config} series={pack.series} parallel={pack.parallel} />
+
+        {pack.demo && (
+          <p className="mt-4 flex items-center gap-1.5 text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+            Sample data — pair a device to see live readings.
+          </p>
+        )}
+        {!pack.demo && pack.stale && (
+          <p className="mt-4 flex items-center gap-1.5 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-slate-400 flex-shrink-0" />
+            Offline — last update {timeAgo(pack.last_update)}.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -1096,6 +1149,23 @@ const PackDetail = ({ pack, chartData, thermalHistory }) => {
   );
 };
 
+// Stat tile for the summary view. Module scope = stable component identity
+// across renders, so the cards don't remount on every 3s poll.
+const StatCard = ({ title, value, icon: Icon, color, subtitle }) => (
+  <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-gray-500 text-sm font-medium">{title}</p>
+        <p className="text-2xl font-bold text-gray-900 mt-1">{value}</p>
+        {subtitle && <p className="text-xs text-gray-400 mt-1">{subtitle}</p>}
+      </div>
+      <div className={`p-3 rounded-lg ${color}`}>
+        <Icon className="w-6 h-6 text-white" />
+      </div>
+    </div>
+  </div>
+);
+
 // Main Dashboard Component
 const Dashboard = () => {
   const { user, logout } = useAuth();
@@ -1117,6 +1187,9 @@ const Dashboard = () => {
   const [packRangeData, setPackRangeData] = useState({});
   const [packThermalHistory, setPackThermalHistory] = useState({});
   const [alarms, setAlarms] = useState([]);
+  // Transient banner for failed user actions / background fetches so errors
+  // aren't swallowed silently. Cleared on the next successful poll or dismiss.
+  const [actionError, setActionError] = useState(null);
   const lastAlarmStates = useRef({});
 
   // Add this ref to track last update time
@@ -1137,7 +1210,9 @@ const Dashboard = () => {
       if (err.status === 401) {
         logout();
         navigate('/login');
+        return;
       }
+      setActionError(err.message || 'Failed to load your packs');
     }
   }, [logout, navigate]);
 
@@ -1151,6 +1226,7 @@ const Dashboard = () => {
       setRefreshKey(k => k + 1);
     } catch (err) {
       console.error('Failed to delete pack:', err);
+      setActionError(err.message || 'Failed to remove pack');
     } finally {
       setDeletingPackId(null);
     }
@@ -1161,11 +1237,15 @@ const Dashboard = () => {
     try {
       const data = await apiFetch('/v1/groups/data/latest');
       setGroups(data.groups || []);
+      // A good poll means connectivity recovered — clear any stale action banner.
+      setActionError(null);
     } catch (err) {
       if (err.status === 401) {
         logout();
         navigate('/login');
+        return;
       }
+      setActionError(err.message || 'Failed to load groups');
     }
   }, [logout, navigate]);
 
@@ -1180,6 +1260,7 @@ const Dashboard = () => {
       fetchGroups();
     } catch (err) {
       console.error('Failed to separate group:', err);
+      setActionError(err.message || 'Failed to separate group');
     }
   };
 
@@ -1193,6 +1274,7 @@ const Dashboard = () => {
       fetchGroups();
     } catch (err) {
       console.error('Failed to remove pack from group:', err);
+      setActionError(err.message || 'Failed to remove pack from group');
     }
   };
 
@@ -1256,26 +1338,19 @@ const Dashboard = () => {
               return next;
             });
 
-            // Per-pack thermal history (left/middle/right). Falls back to pack.temp
-            // when the firmware hasn't published per-thermistor readings yet.
+            // Per-pack thermal history (left/middle/right). The backend always
+            // sends a 3-element `thermistors` array — real per-sensor values
+            // when the firmware reports them, otherwise the mean spread across
+            // all three (flat = no spatial data). No client-side fabrication.
             const shortTime = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
             setPackThermalHistory(prev => {
               const next = { ...prev };
               data.packs.forEach(p => {
                 const baseT = parseFloat(p.temp) || 0;
-                let l = baseT, m = baseT, r = baseT;
-                if (Array.isArray(p.thermistors) && p.thermistors.length === 3) {
-                  l = parseFloat(p.thermistors[0]?.value) || baseT;
-                  m = parseFloat(p.thermistors[1]?.value) || baseT;
-                  r = parseFloat(p.thermistors[2]?.value) || baseT;
-                } else {
-                  // Synthesize a small spatial variation around the avg so the heatmap
-                  // is visually informative until the per-thermistor data flows in.
-                  const jitter = () => (Math.random() - 0.5) * 1.5;
-                  l = baseT + jitter();
-                  m = baseT + jitter();
-                  r = baseT + jitter();
-                }
+                const t = Array.isArray(p.thermistors) ? p.thermistors : [];
+                const l = parseFloat(t[0]?.value) || baseT;
+                const m = parseFloat(t[1]?.value) || baseT;
+                const r = parseFloat(t[2]?.value) || baseT;
                 const existing = next[p.id] || [];
                 next[p.id] = [...existing, { t: now, time: shortTime, left: l, middle: m, mid: m, right: r }].slice(-60);
               });
@@ -1434,10 +1509,14 @@ const Dashboard = () => {
       };
     }
 
-    const totalVoltage = batteryPacks.reduce((sum, p) => sum + parseFloat(p.voltage), 0);
-    const totalCurrent = batteryPacks.reduce((sum, p) => sum + parseFloat(p.current), 0);
-    const totalPower = (totalVoltage * totalCurrent / batteryPacks.length) / 1000; // kW
-    
+    const totalCurrent = batteryPacks.reduce((sum, p) => sum + (parseFloat(p.current) || 0), 0);
+    // True aggregate power = sum of each pack's own V×I (watts), not the
+    // cross-term (ΣV·ΣI/N) the previous formula used.
+    const totalPowerW = batteryPacks.reduce(
+      (sum, p) => sum + (parseFloat(p.voltage) || 0) * (parseFloat(p.current) || 0),
+      0
+    );
+
     const alerts = batteryPacks.reduce((acc, p) => {
       if (p.status === 'alert') acc.critical++;
       if (p.status === 'caution') acc.warnings++;
@@ -1445,7 +1524,7 @@ const Dashboard = () => {
     }, { critical: 0, warnings: 0 });
 
     return {
-      totalPower: totalPower.toFixed(2),
+      totalPower: totalPowerW,
       totalCurrent: totalCurrent.toFixed(2),
       activePacks: batteryPacks.length,
       alerts,
@@ -1454,23 +1533,10 @@ const Dashboard = () => {
     };
   }, [batteryPacks]);
 
-  // Stat Card Component
-  const StatCard = ({ title, value, icon: Icon, color, subtitle }) => (
-    <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-gray-500 text-sm font-medium">{title}</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{value}</p>
-          {subtitle && <p className="text-xs text-gray-400 mt-1">{subtitle}</p>}
-        </div>
-        <div className={`p-3 rounded-lg ${color}`}>
-          <Icon className="w-6 h-6 text-white" />
-        </div>
-      </div>
-    </div>
-  );
-
-  // Alarm History Component
+  // (StatCard is hoisted to module scope — see above — so it isn't recreated
+  // each render, which used to remount the stat cards on every 3s poll.
+  // AlarmHistory and DashboardOverview are invoked as plain functions at their
+  // call sites for the same reason; neither uses hooks, so this is safe.)
   const AlarmHistory = ({ alarms, onClear }) => {
     const sevStyle = {
       critical: 'bg-rose-50 text-rose-700 border-rose-200',
@@ -1552,7 +1618,7 @@ const Dashboard = () => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <StatCard
           title="Total Power"
-          value={`${stats.totalPower} kW`}
+          value={formatPower(stats.totalPower)}
           icon={Zap}
           color="bg-blue-500"
         />
@@ -1825,7 +1891,23 @@ const Dashboard = () => {
 
         {/* Page content */}
         <main className="flex-1 px-8 py-6">
-          {activeTab === 'summary' && <DashboardOverview />}
+          {actionError && (
+            <div className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-5 w-5 flex-shrink-0" />
+                <span>{actionError}</span>
+              </div>
+              <button
+                onClick={() => setActionError(null)}
+                className="flex-shrink-0 text-red-400 hover:text-red-600"
+                title="Dismiss"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'summary' && DashboardOverview()}
 
           {activeTab === 'charts' && (
             <div className="space-y-6">
@@ -1857,7 +1939,7 @@ const Dashboard = () => {
             </div>
           )}
 
-          {activeTab === 'history' && <AlarmHistory alarms={alarms} onClear={() => setAlarms([])} />}
+          {activeTab === 'history' && AlarmHistory({ alarms, onClear: () => setAlarms([]) })}
 
           {activeTab === 'pack' && (() => {
             const pack = batteryPacks.find(p => p.id === selectedPackId);

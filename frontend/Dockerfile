@@ -5,6 +5,9 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
+# Fail the build on lint errors so contract/dead-code regressions can't ship.
+# (eslint exits non-zero only on errors, not warnings.)
+RUN npm run lint
 RUN npm run build
 
 # Stage 2: Serve with Nginx

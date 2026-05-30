@@ -76,6 +76,9 @@ export function AuthProvider({ children }) {
   );
 }
 
+// This hook is co-located with the provider by convention. The fast-refresh
+// rule wants one component per file; exporting the hook here is intentional.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");

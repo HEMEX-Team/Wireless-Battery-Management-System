@@ -2,38 +2,7 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import Plotly from 'plotly.js-dist-min';
 
 // =============================================================================
-// 1. PURE HELPER — parabolic spatial interpolation
-// =============================================================================
-//
-// Three thermistors at y = 0, 0.5, 1 along the pack uniquely determine the
-// parabolic solution to the steady-state 1-D heat equation with uniform
-// internal generation:  T(y) = a + b·y + c·y²
-//
-//   a = T_left
-//   b = -3·T_left + 4·T_mid - T_right
-//   c =  2·T_left - 4·T_mid + 2·T_right
-//
-// Returns a Float32Array of length n with T sampled at evenly spaced y in [0,1].
-//
-export function parabolicInterp(tLeft, tMid, tRight, n) {
-  const a = tLeft;
-  const b = -3 * tLeft + 4 * tMid - tRight;
-  const c =  2 * tLeft - 4 * tMid + 2 * tRight;
-  const out = new Float32Array(n);
-  if (n === 1) {
-    out[0] = a + b * 0.5 + c * 0.25;
-    return out;
-  }
-  const denom = n - 1;
-  for (let i = 0; i < n; i++) {
-    const y = i / denom;
-    out[i] = a + b * y + c * y * y;
-  }
-  return out;
-}
-
-// =============================================================================
-// 2. SYNTHETIC DATA GENERATOR
+// 1. SYNTHETIC DATA GENERATOR
 // =============================================================================
 //
 // 48 h of realistic 3-thermistor BMS data sampled every 20 min:
@@ -43,7 +12,7 @@ export function parabolicInterp(tLeft, tMid, tRight, n) {
 //   - Slow ±1.5 °C left/right asymmetry drift.
 //   - ±0.3 °C white noise per reading.
 //
-export function generateSyntheticSeries({
+function generateSyntheticSeries({
   hours = 48,
   intervalMin = 20,
   endAt = Date.now(),

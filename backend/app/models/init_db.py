@@ -16,6 +16,9 @@ log = logging.getLogger("wbms.initdb")
 _LIGHTWEIGHT_MIGRATIONS = [
     ("packs", "master_pairing_code", "VARCHAR(10)"),
     ("packs", "master_firmware_version", "VARCHAR(32)"),
+    ("readings", "temp1", "FLOAT"),
+    ("readings", "temp2", "FLOAT"),
+    ("readings", "temp3", "FLOAT"),
 ]
 
 

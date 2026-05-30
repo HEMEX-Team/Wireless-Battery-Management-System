@@ -176,20 +176,25 @@ def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
     except (TypeError, ValueError):
         current_a = 0.0
 
-    # Average of available thermistors, fall back to chip temp
-    temps = [
-        payload.get(k)
-        for k in ("temp1", "temp2", "temp3")
-        if payload.get(k) is not None
-    ]
-    try:
-        temperature = (
-            sum(float(t) for t in temps) / len(temps)
-            if temps
-            else float(payload.get("chipTemp", 0.0))
-        )
-    except (TypeError, ValueError):
-        temperature = 0.0
+    # Individual thermistor temps (kept separately for the spatial heatmap),
+    # plus their mean for the single-value `temperature` display column.
+    def _as_float(key: str) -> Optional[float]:
+        val = payload.get(key)
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    temp1_v = _as_float("temp1")
+    temp2_v = _as_float("temp2")
+    temp3_v = _as_float("temp3")
+    present_temps = [t for t in (temp1_v, temp2_v, temp3_v) if t is not None]
+    if present_temps:
+        temperature = sum(present_temps) / len(present_temps)
+    else:
+        temperature = _as_float("chipTemp") or 0.0
 
     soc = _estimate_soc(list(cell_voltages.values()))
     soh = 100.0  # no long-term health estimate yet
@@ -202,6 +207,9 @@ def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
         v_real=v_real,
         current=current_a,
         temperature=temperature,
+        temp1=temp1_v,
+        temp2=temp2_v,
+        temp3=temp3_v,
         cycles=0,
         v_estimated=v_real,
         soc=soc,

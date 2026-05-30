@@ -154,6 +154,7 @@ class _PackSnapshot:
     temperature: float
     soc: float
     soh: float
+    demo: bool = False
 
 
 def _latest_reading_for_pack(db: Session, pack: Pack) -> _PackSnapshot:
@@ -172,19 +173,23 @@ def _latest_reading_for_pack(db: Session, pack: Pack) -> _PackSnapshot:
             temperature=r.temperature,
             soc=r.soc,
             soh=r.soh,
+            demo=False,
         )
+    rng = random.Random(pack.id)
     series = pack.series_count
     return _PackSnapshot(
-        v_real=round(random.uniform(3.2 * series, 4.2 * series), 2),
-        current=round(random.uniform(5.0, 15.0), 2),
-        temperature=round(random.uniform(25.0, 40.0), 2),
-        soc=float(random.randint(50, 100)),
-        soh=float(random.randint(90, 100)),
+        v_real=round(rng.uniform(3.2 * series, 4.2 * series), 2),
+        current=round(rng.uniform(5.0, 15.0), 2),
+        temperature=round(rng.uniform(25.0, 40.0), 2),
+        soc=float(rng.randint(50, 100)),
+        soh=float(rng.randint(90, 100)),
+        demo=True,
     )
 
 
 def _latest_cells_for_pack(db: Session, pack: Pack) -> list[dict]:
     total_cells = pack.series_count * pack.parallel_count
+    rng = random.Random(pack.id)
     latest_per_cell = (
         db.query(
             BatteryReading.battery_position.label("pos"),
@@ -211,7 +216,7 @@ def _latest_cells_for_pack(db: Session, pack: Pack) -> list[dict]:
         cells.append({"value": f"{v:.2f}", "status": status_, "pack_id": pack.id, "pack_name": pack.name})
     # Mock fill when no real cell readings exist
     while len(cells) < total_cells:
-        v = round(random.uniform(3.2, 4.2), 2)
+        v = round(rng.uniform(3.2, 4.2), 2)
         status_ = "caution" if v < 3.3 or v > 4.1 else "safe"
         cells.append({"value": f"{v:.2f}", "status": status_, "pack_id": pack.id, "pack_name": pack.name})
     return cells[:total_cells]
@@ -241,11 +246,19 @@ def get_latest_group_data(
                 "current": "0.00",
                 "temp": "0.00",
                 "config": "empty",
+                "series": "0",
+                "parallel": "0",
                 "cells": [],
+                "demo": False,
             })
             continue
 
         readings = [(p, _latest_reading_for_pack(db, p)) for p in group.packs]
+
+        # The whole group is a demo only if NONE of its members have real data.
+        # A mix of real + placeholder members is still treated as live (the
+        # aggregate is dominated by real readings).
+        group_demo = all(snap.demo for _, snap in readings)
 
         voltages = [r.v_real for _, r in readings]
         currents = [r.current for _, r in readings]
@@ -304,6 +317,7 @@ def get_latest_group_data(
             "series": str(total_series),
             "parallel": str(total_parallel),
             "cells": cells,
+            "demo": group_demo,
         })
 
     return {

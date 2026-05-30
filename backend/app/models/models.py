@@ -2,7 +2,7 @@
 from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, ForeignKey, Index, Table
 from sqlalchemy.orm import relationship
 from app.models.database import Base
-from datetime import datetime, timezone
+from datetime import datetime
 
 
 # Association table for many-to-many between Pack and PackGroup
@@ -104,7 +104,13 @@ class Reading(Base):
     
     v_real = Column(Float, nullable=False)
     current = Column(Float, nullable=False)
-    temperature = Column(Float, nullable=False)
+    temperature = Column(Float, nullable=False)  # mean of the thermistors below
+    # Individual thermistor temps (left/middle/right). Nullable: older rows and
+    # firmware that only reports chipTemp won't have them. The thermal heatmap
+    # uses these for a real spatial view instead of synthesizing one.
+    temp1 = Column(Float, nullable=True)
+    temp2 = Column(Float, nullable=True)
+    temp3 = Column(Float, nullable=True)
     cycles = Column(Integer, nullable=False)
     v_estimated = Column(Float, nullable=False)
     soc = Column(Float, nullable=False)

@@ -14,7 +14,6 @@ export default function SignInComponent() {
 
   const [errors, setErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -132,22 +131,8 @@ export default function SignInComponent() {
               )}
             </div>
 
-            {/* Remember me and Forgot password */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center">
-                <input
-                  id="remember-me"
-                  name="remember-me"
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                />
-                <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-700">
-                  Remember me
-                </label>
-              </div>
-
+            {/* Forgot password */}
+            <div className="flex items-center justify-end">
               <div className="text-sm">
                 <a href="#" className="text-blue-600 hover:text-blue-500 font-medium">
                   Forgot your password?

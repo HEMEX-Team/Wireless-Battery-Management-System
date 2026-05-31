@@ -1,11 +1,15 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Battery, BatteryCharging, Zap, AlertTriangle, Activity, Clock, TrendingDown, AlertCircle, Home, BarChart3, RefreshCw, Plus, X, Trash2, LogOut, Layers, Unlink, Repeat, Moon, Gauge, Download, Sliders } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Legend, Tooltip, CartesianGrid, AreaChart, Area } from 'recharts';
+import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from 'react';
+import { Battery, BatteryCharging, Zap, AlertTriangle, Activity, Clock, TrendingDown, AlertCircle, Home, BarChart3, RefreshCw, Plus, X, Trash2, LogOut, Layers, Unlink, Repeat, Moon, Gauge, Download, Sliders, Settings } from 'lucide-react';
+import { XAxis, YAxis, ResponsiveContainer, Legend, Tooltip, CartesianGrid, AreaChart, Area } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch } from '../lib/api';
 import AdminBmsConfig from '../components/AdminBmsConfig';
-import ThermalHeatmapPlotly from '../components/charts/ThermalHeatmap';
+
+// Lazy-loaded so Plotly (~3 MB) is split into its own async chunk instead of
+// bloating the main bundle. It only loads when a pack-detail view (the only
+// place the thermal heatmap renders) is actually opened.
+const ThermalHeatmapPlotly = lazy(() => import('../components/charts/ThermalHeatmap'));
 
 // Utility Components
 const StatusBadge = ({ status }) => {
@@ -51,6 +55,240 @@ const timeAgo = (iso) => {
   return `${Math.round(hrs / 24)}d ago`;
 };
 
+
+// =============================================================================
+// Editable full-scale limits for the top dashboard gauges. Voltage derives from
+// each pack's cell config (series × cellFullVolts); current and power have no
+// rated value in the data model, so they scale against these constants — change
+// them in ONE place here to re-calibrate every gauge.
+// =============================================================================
+const GAUGE_LIMITS = {
+  maxAmps: 50,        // current redline (A) — used by the Current and Power gauges
+  cellFullVolts: 4.2, // per-cell full-charge voltage → pack voltage full-scale
+};
+
+// A themed 180° semicircle gauge (pure SVG, no extra deps). The coloured arc
+// sweeps left→right in proportion to |value| / max.
+//   tone 'charge' → stays brand-blue (fuller = better, e.g. voltage)
+//   tone 'load'   → blue → amber → rose as it approaches the redline (current,
+//                   power), like a car tachometer nearing the red zone.
+// `format` returns the centre string (may include its own unit, e.g. kW); pass
+// unit='' in that case so it isn't doubled.
+const GAUGE_ARC = 'M 12 92 A 80 80 0 0 1 172 92'; // r=80, centre (92,92) — top semicircle
+// Named ArcGauge to avoid colliding with lucide-react's `Gauge` icon import.
+const ArcGauge = ({ value, max, label, unit = '', tone = 'load', format }) => {
+  const v = Number(value) || 0;
+  const ceiling = max > 0 ? max : 1;
+  const frac = Math.max(0, Math.min(1, Math.abs(v) / ceiling));
+  const pct = Math.round(frac * 100);
+
+  const color =
+    tone === 'charge'
+      ? '#2563EB'
+      : frac >= 0.9 ? '#E11D48' : frac >= 0.7 ? '#F59E0B' : '#2563EB';
+
+  const fmt = format || ((n) => n.toFixed(1));
+  const u = (n) => `${fmt(n)}${unit ? ` ${unit}` : ''}`;
+
+  return (
+    <div className="flex flex-col items-center px-3 py-2">
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">{label}</span>
+      <div className="relative mx-auto w-full max-w-[190px]">
+        <svg viewBox="0 0 184 100" className="w-full">
+          <path d={GAUGE_ARC} fill="none" stroke="#EEF1F5" strokeWidth="13" strokeLinecap="round" />
+          <path
+            d={GAUGE_ARC}
+            fill="none"
+            stroke={color}
+            strokeWidth="13"
+            strokeLinecap="round"
+            pathLength="100"
+            strokeDasharray={`${frac * 100} 100`}
+            style={{ transition: 'stroke-dasharray 0.6s ease, stroke 0.3s ease' }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-end pb-0.5">
+          <span className="text-2xl font-bold leading-none text-gray-900 tabular-nums">
+            {fmt(v)}{unit && <span className="ml-0.5 text-sm font-semibold text-gray-400">{unit}</span>}
+          </span>
+          <span className="mt-1 text-[10px] text-gray-400 tabular-nums">{pct}% of {u(ceiling)}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Compact pack-health pill shown in the gauges panel header.
+const AlertsChip = ({ alerts }) => {
+  const total = (alerts?.critical || 0) + (alerts?.warnings || 0);
+  if (total === 0) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> All nominal
+      </span>
+    );
+  }
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
+        alerts.critical > 0
+          ? 'border-rose-100 bg-rose-50 text-rose-600'
+          : 'border-amber-100 bg-amber-50 text-amber-600'
+      }`}
+    >
+      <AlertTriangle className="h-3.5 w-3.5" />
+      {alerts.critical} critical · {alerts.warnings} warning{alerts.warnings === 1 ? '' : 's'}
+    </span>
+  );
+};
+
+// Blended panel: Voltage / Current / Power gauges in one rounded surface
+// (hairline-separated, not three separate cards) plus a pack-health chip.
+//   orientation 'row' → three across (top of the summary view)
+//   orientation 'col' → stacked vertically (fills the pack-detail column)
+const MetricGauges = ({
+  voltage, voltageMax, current, currentMax, power, powerMax, alerts,
+  orientation = 'row', title = 'Live readings', subtitle = 'Across all active packs',
+}) => {
+  const body =
+    orientation === 'col'
+      ? 'grid grid-cols-1 divide-y divide-gray-100 px-2 pb-3 pt-1'
+      : 'grid grid-cols-1 divide-y divide-gray-100 px-2 pb-4 pt-1 sm:grid-cols-3 sm:divide-x sm:divide-y-0';
+  return (
+    <div className="rounded-2xl bg-white shadow-sm ring-1 ring-gray-200/70">
+      <div className="flex items-center justify-between px-5 pt-4">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+          {subtitle && <p className="text-[11px] text-gray-400">{subtitle}</p>}
+        </div>
+        {alerts && <AlertsChip alerts={alerts} />}
+      </div>
+      <div className={body}>
+        <ArcGauge label="Voltage" value={voltage} max={voltageMax} unit="V" tone="charge" />
+        <ArcGauge label="Current" value={current} max={currentMax} unit="A" tone="load" />
+        <ArcGauge label="Power" value={power} max={powerMax} unit="" tone="load" format={formatPower} />
+      </div>
+    </div>
+  );
+};
+
+// Build the Voltage/Current/Power gauge inputs for a set of packs. Voltage is
+// the mean pack voltage (full-scale from each pack's cell config); current and
+// power are pack totals scaled against GAUGE_LIMITS. Pass [pack] for a single
+// pack. Returns null for an empty list so callers can skip the panel.
+const gaugeInputsFor = (packs) => {
+  if (!packs || !packs.length) return null;
+  const n = packs.length;
+  const num = (x) => parseFloat(x) || 0;
+  // Per-pack full-scales: voltage from cell config; current from the pack's own
+  // specs (C × Ah × P) when configured, else the global GAUGE_LIMITS fallback.
+  const perPack = packs.map((p) => {
+    const series = parseInt(p.series) || 3;
+    const parallel = parseInt(p.parallel) || 1;
+    const voltFull = series * GAUGE_LIMITS.cellFullVolts;
+    const cap = num(p.cell_capacity_ah);
+    const cRate = num(p.max_discharge_c);
+    const ratedA = cap > 0 && cRate > 0 ? cRate * cap * parallel : GAUGE_LIMITS.maxAmps;
+    return { voltFull, ratedA };
+  });
+  return {
+    voltage: packs.reduce((s, p) => s + num(p.voltage), 0) / n,
+    voltageMax: perPack.reduce((a, b) => a + b.voltFull, 0) / n,
+    current: packs.reduce((s, p) => s + num(p.current), 0),
+    currentMax: perPack.reduce((a, b) => a + b.ratedA, 0),
+    power: packs.reduce((s, p) => s + num(p.voltage) * num(p.current), 0),
+    powerMax: perPack.reduce((a, b) => a + b.voltFull * b.ratedA, 0),
+  };
+};
+
+// Redlines a set of cell specs implies, for the live preview in the spec form.
+const computeRedlines = ({ series, parallel, cellCapacityAh, maxDischargeC }) => {
+  const s = parseInt(series) || 0;
+  const p = parseInt(parallel) || 0;
+  const cap = parseFloat(cellCapacityAh) || 0;
+  const c = parseFloat(maxDischargeC) || 0;
+  const voltFull = s * GAUGE_LIMITS.cellFullVolts;
+  const ratedA = cap * c * p;
+  return { voltFull, ratedA, powerW: voltFull * ratedA };
+};
+
+// Shared per-cell spec inputs + a computed-redlines preview. Used by both the
+// Add Pack (manual) flow and the right-click Edit window so they stay in sync.
+// `values` carries cell_nominal_voltage / cell_capacity_ah / max_discharge_c;
+// onChange receives the merged object.
+const PackSpecFields = ({ values, onChange, series, parallel }) => {
+  const { voltFull, ratedA, powerW } = computeRedlines({
+    series, parallel,
+    cellCapacityAh: values.cell_capacity_ah,
+    maxDischargeC: values.max_discharge_c,
+  });
+  const set = (k) => (e) => onChange({ ...values, [k]: e.target.value });
+  const fields = [
+    { k: 'cell_nominal_voltage', label: 'Nominal', unit: 'V / cell', placeholder: '3.6', step: '0.1' },
+    { k: 'cell_capacity_ah', label: 'Capacity', unit: 'Ah / cell', placeholder: '3.5', step: '0.1' },
+    { k: 'max_discharge_c', label: 'Max discharge', unit: 'C-rate', placeholder: '2', step: '0.5' },
+  ];
+  const preview = [
+    { v: voltFull, unit: 'V', fmt: (x) => x.toFixed(1), label: 'voltage' },
+    { v: ratedA, unit: 'A', fmt: (x) => x.toFixed(0), label: 'current' },
+    { v: powerW, unit: '', fmt: (x) => formatPower(x), label: 'power' },
+  ];
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-3 gap-3">
+        {fields.map(({ k, label, unit, placeholder, step }) => (
+          <div key={k}>
+            <label className="mb-1 block text-xs font-medium text-gray-600">{label}</label>
+            <input
+              type="number" min="0" step={step} inputMode="decimal"
+              value={values[k] ?? ''}
+              onChange={set(k)}
+              placeholder={placeholder}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="mt-1 block text-[10px] text-gray-400">{unit}</span>
+          </div>
+        ))}
+      </div>
+      <div className="rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2.5">
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-blue-700/70">
+          Gauge redlines (computed)
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          {preview.map(({ v, unit, fmt, label }) => (
+            <div key={label}>
+              <div className="text-sm font-bold text-gray-900 tabular-nums">
+                {v > 0 ? fmt(v) : '—'}
+                {unit && v > 0 && <span className="ml-0.5 text-[10px] font-normal text-gray-400">{unit}</span>}
+              </div>
+              <div className="text-[10px] text-gray-400">{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Shared themed tooltip for the Recharts trend/area charts — keeps the hover
+// card on-brand (white, hairline border, coloured dots) instead of the default.
+const ChartTooltip = ({ active, payload, label, unit }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-lg border border-gray-100 bg-white/95 px-3 py-2 shadow-lg backdrop-blur-sm">
+      <div className="mb-1 text-[11px] font-medium text-gray-400">{label}</div>
+      {payload.map((p) => (
+        <div key={p.dataKey} className="flex items-center gap-2 text-xs">
+          <span className="h-2 w-2 rounded-full" style={{ background: p.color || p.stroke }} />
+          <span className="text-gray-500">{p.name}</span>
+          <span className="ml-auto font-semibold text-gray-900 tabular-nums">
+            {p.value}{unit || ''}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 // Battery Grid Component
 // Renders an S × P cell layout: S series positions across, P parallel cells
@@ -167,55 +405,62 @@ const BatteryGrid = ({ cells, config, series, parallel }) => {
 
 // Enhanced Chart Component - Memoized to prevent unnecessary re-renders
 const TrendChart = React.memo(({ data, title, subtitle, dataKeys }) => (
-  <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-    <div className="mb-6">
-      <h2 className="text-lg font-semibold text-gray-900 mb-2">{title}</h2>
-      {subtitle && <p className="text-sm text-gray-500">{subtitle}</p>}
+  <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-gray-200/70">
+    <div className="mb-4">
+      <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+      {subtitle && <p className="mt-0.5 text-xs text-gray-400">{subtitle}</p>}
     </div>
 
     <div className="h-64">
       {data.length > 0 ? (
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-            <XAxis 
-              dataKey="time" 
+          <AreaChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+            <defs>
+              {dataKeys.map(({ key, color }) => (
+                <linearGradient key={key} id={`trend-${key}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={color} stopOpacity={0.18} />
+                  <stop offset="100%" stopColor={color} stopOpacity={0} />
+                </linearGradient>
+              ))}
+            </defs>
+            <CartesianGrid strokeDasharray="4 4" stroke="#F1F5F9" vertical={false} />
+            <XAxis
+              dataKey="time"
               axisLine={false}
               tickLine={false}
-              tick={{ fontSize: 12, fill: '#6B7280' }}
+              minTickGap={28}
+              tick={{ fontSize: 11, fill: '#9CA3AF' }}
             />
-            <YAxis 
+            <YAxis
               axisLine={false}
               tickLine={false}
-              tick={{ fontSize: 12, fill: '#6B7280' }}
+              width={36}
+              tick={{ fontSize: 11, fill: '#9CA3AF' }}
             />
-            <Tooltip 
-              contentStyle={{ 
-                backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                border: '1px solid #E5E7EB',
-                borderRadius: '8px'
-              }}
-            />
-            <Legend />
+            <Tooltip content={<ChartTooltip />} cursor={{ stroke: '#CBD5E1', strokeDasharray: '4 4' }} />
+            {dataKeys.length > 1 && (
+              <Legend iconType="circle" wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+            )}
             {dataKeys.map(({ key, color, name }) => (
-              <Line 
+              <Area
                 key={key}
-                type="monotone" 
-                dataKey={key} 
-                stroke={color} 
-                strokeWidth={2}
+                type="monotone"
+                dataKey={key}
                 name={name}
+                stroke={color}
+                strokeWidth={2.5}
+                fill={`url(#trend-${key})`}
                 dot={false}
-                activeDot={{ r: 6 }}
-                connectNulls={false}
+                activeDot={{ r: 4, strokeWidth: 2, stroke: '#fff' }}
+                connectNulls
                 isAnimationActive={false}
               />
             ))}
-          </LineChart>
+          </AreaChart>
         </ResponsiveContainer>
       ) : (
-        <div className="flex items-center justify-center h-full text-gray-400">
-          <p>No data available yet. Data will appear as it's collected.</p>
+        <div className="flex h-full items-center justify-center text-sm text-gray-400">
+          <p>No data yet — readings will appear as they're collected.</p>
         </div>
       )}
     </div>
@@ -228,58 +473,57 @@ const BatteryRangeChart = React.memo(({ data }) => {
   const currentPct = lastPoint ? lastPoint.percentage : 0;
 
   return (
-    <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-      <div className="mb-6">
-        <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Battery Percentage</h2>
-        <span className="text-3xl font-bold text-gray-900">{currentPct}%</span>
+    <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-gray-200/70">
+      <div className="mb-4 flex items-end justify-between">
+        <div>
+          <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-gray-400">Battery Percentage</h2>
+          <span className="text-3xl font-bold text-gray-900 tabular-nums">{currentPct}%</span>
+        </div>
+        <span className="text-[11px] text-gray-400">State of charge over time</span>
       </div>
 
       <div className="h-72">
         {data.length > 1 ? (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+            <AreaChart data={data} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="batteryFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#3B82F6" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="#3B82F6" stopOpacity={0.02} />
+                  <stop offset="0%" stopColor="#2563EB" stopOpacity={0.28} />
+                  <stop offset="100%" stopColor="#2563EB" stopOpacity={0.02} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" vertical={false} />
+              <CartesianGrid strokeDasharray="4 4" stroke="#F1F5F9" vertical={false} />
               <XAxis
                 dataKey="time"
                 axisLine={false}
                 tickLine={false}
-                tick={{ fontSize: 11, fill: '#6B7280' }}
-                label={{ value: 'Time', position: 'insideBottom', offset: -2, fill: '#6B7280', fontSize: 11 }}
+                minTickGap={28}
+                tick={{ fontSize: 11, fill: '#9CA3AF' }}
               />
               <YAxis
                 domain={[0, 100]}
                 axisLine={false}
                 tickLine={false}
-                tick={{ fontSize: 11, fill: '#6B7280' }}
+                width={36}
+                tick={{ fontSize: 11, fill: '#9CA3AF' }}
                 tickFormatter={(v) => `${v}%`}
               />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'rgba(255, 255, 255, 0.95)',
-                  border: '1px solid #E5E7EB',
-                  borderRadius: '8px',
-                  color: '#111827'
-                }}
-                formatter={(v) => [`${v}%`, 'Battery']}
-              />
+              <Tooltip content={<ChartTooltip unit="%" />} cursor={{ stroke: '#CBD5E1', strokeDasharray: '4 4' }} />
               <Area
                 type="monotone"
                 dataKey="percentage"
-                stroke="#3B82F6"
-                strokeWidth={2}
+                name="Battery"
+                stroke="#2563EB"
+                strokeWidth={2.5}
                 fill="url(#batteryFill)"
+                dot={false}
+                activeDot={{ r: 4, strokeWidth: 2, stroke: '#fff' }}
                 isAnimationActive={false}
               />
             </AreaChart>
           </ResponsiveContainer>
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+          <div className="flex h-full items-center justify-center text-sm text-gray-400">
             Collecting data...
           </div>
         )}
@@ -292,7 +536,7 @@ const BatteryRangeChart = React.memo(({ data }) => {
 const AddPackModal = ({ isOpen, onClose, onPackCreated }) => {
   const [activeTab, setActiveTab] = useState('pair');
   const [pairingCode, setPairingCode] = useState('');
-  const [form, setForm] = useState({ name: '', pack_identifier: '', pairing_code: '', series_count: 3, parallel_count: 1 });
+  const [form, setForm] = useState({ name: '', pack_identifier: '', pairing_code: '', series_count: 3, parallel_count: 1, cell_nominal_voltage: '', cell_capacity_ah: '', max_discharge_c: '' });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -348,9 +592,12 @@ const AddPackModal = ({ isOpen, onClose, onPackCreated }) => {
           pairing_code: form.pairing_code || form.pack_identifier.toUpperCase(),
           series_count: parseInt(form.series_count) || 3,
           parallel_count: parseInt(form.parallel_count) || 1,
+          cell_nominal_voltage: form.cell_nominal_voltage ? parseFloat(form.cell_nominal_voltage) : null,
+          cell_capacity_ah: form.cell_capacity_ah ? parseFloat(form.cell_capacity_ah) : null,
+          max_discharge_c: form.max_discharge_c ? parseFloat(form.max_discharge_c) : null,
         }),
       });
-      setForm({ name: '', pack_identifier: '', pairing_code: '', series_count: 3, parallel_count: 1 });
+      setForm({ name: '', pack_identifier: '', pairing_code: '', series_count: 3, parallel_count: 1, cell_nominal_voltage: '', cell_capacity_ah: '', max_discharge_c: '' });
       onPackCreated();
       onClose();
     } catch (err) {
@@ -471,6 +718,20 @@ const AddPackModal = ({ isOpen, onClose, onPackCreated }) => {
               <div className="p-3 bg-gray-50 rounded-lg text-sm text-gray-600">
                 Configuration: <span className="font-semibold">{form.series_count}S{form.parallel_count}P</span> ({(parseInt(form.series_count) || 0) * (parseInt(form.parallel_count) || 0)} cells)
               </div>
+
+              {/* Cell specs → gauge redlines (optional). Shared with the Edit window. */}
+              <div className="border-t border-gray-100 pt-4">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  Cell specs <span className="font-normal normal-case text-gray-400">(optional — powers the gauges)</span>
+                </p>
+                <PackSpecFields
+                  values={form}
+                  onChange={setForm}
+                  series={form.series_count}
+                  parallel={form.parallel_count}
+                />
+              </div>
+
               <button
                 type="submit"
                 disabled={submitting}
@@ -483,6 +744,128 @@ const AddPackModal = ({ isOpen, onClose, onPackCreated }) => {
             </form>
           )}
         </div>
+      </div>
+    </div>
+  );
+};
+
+// Pack Specs window — opened from the sidebar (right-click or the specs icon).
+// Edits name, S/P config and the per-cell specs that drive the gauge redlines.
+const EditPackModal = ({ isOpen, pack, onClose, onSaved }) => {
+  const [form, setForm] = useState({});
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!pack) return;
+    setForm({
+      name: pack.name || '',
+      series_count: pack.series_count ?? 3,
+      parallel_count: pack.parallel_count ?? 1,
+      cell_nominal_voltage: pack.cell_nominal_voltage ?? '',
+      cell_capacity_ah: pack.cell_capacity_ah ?? '',
+      max_discharge_c: pack.max_discharge_c ?? '',
+    });
+    setError('');
+  }, [pack]);
+
+  if (!isOpen || !pack) return null;
+
+  const numOrNull = (v) => (v === '' || v == null ? null : parseFloat(v));
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!form.name?.trim()) { setError('Pack name is required'); return; }
+    setSubmitting(true);
+    setError('');
+    try {
+      await apiFetch(`/v1/packs/${pack.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: form.name.trim(),
+          series_count: parseInt(form.series_count) || 1,
+          parallel_count: parseInt(form.parallel_count) || 1,
+          cell_nominal_voltage: numOrNull(form.cell_nominal_voltage),
+          cell_capacity_ah: numOrNull(form.cell_capacity_ah),
+          max_discharge_c: numOrNull(form.max_discharge_c),
+        }),
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err.message || 'Failed to update pack');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-gray-200 p-6">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">Pack specs</h2>
+            <p className="font-mono text-xs text-gray-400">{pack.pack_identifier}</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1 hover:bg-gray-100">
+            <X className="h-5 w-5 text-gray-500" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 p-6">
+          {error && (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-600">{error}</div>
+          )}
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Pack Name</label>
+            <input
+              type="text"
+              value={form.name ?? ''}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Series (S)</label>
+              <input
+                type="number" min="1"
+                value={form.series_count ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, series_count: e.target.value }))}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Parallel (P)</label>
+              <input
+                type="number" min="1"
+                value={form.parallel_count ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, parallel_count: e.target.value }))}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="border-t border-gray-100 pt-4">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Cell specs</p>
+            <PackSpecFields
+              values={form}
+              onChange={setForm}
+              series={form.series_count}
+              parallel={form.parallel_count}
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={submitting}
+            className={`w-full rounded-md px-4 py-3 text-sm font-medium text-white transition ${
+              submitting ? 'cursor-not-allowed bg-blue-300' : 'bg-blue-600 hover:bg-blue-700'
+            }`}
+          >
+            {submitting ? 'Saving…' : 'Save specs'}
+          </button>
+        </form>
       </div>
     </div>
   );
@@ -639,7 +1022,7 @@ const GroupCard = ({ group, onSeparate, onRemovePack }) => {
   const sohColor = group.soh > 80 ? 'bg-slate-700' : group.soh > 60 ? 'bg-amber-500' : 'bg-rose-500';
 
   return (
-    <div className={`bg-white rounded-xl border-2 shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden ${group.demo ? 'border-amber-300' : 'border-blue-200'}`}>
+    <div className={`bg-white rounded-2xl border-2 shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden ${group.demo ? 'border-amber-300' : 'border-blue-200'}`}>
       <div className={`h-0.5 ${accentColor}`} />
 
       <div className="p-5">
@@ -914,7 +1297,7 @@ const ChargeStatsCard = ({ pack, chartData, dbStats }) => {
   ];
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-2xl ring-1 ring-gray-200/70 shadow-sm overflow-hidden">
       <div className="h-0.5 bg-blue-500" />
       <div className="p-5">
         <div className="flex items-center gap-3 mb-5">
@@ -971,7 +1354,7 @@ const ActivityInsightsCard = ({ rangeData, currentAmps }) => {
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-2xl ring-1 ring-gray-200/70 shadow-sm overflow-hidden">
       <div className="h-0.5 bg-emerald-500" />
       <div className="p-5">
         <div className="flex items-center gap-3 mb-5">
@@ -1052,7 +1435,7 @@ const PackSummaryCard = ({ pack }) => {
   const sohColor = pack.soh > 80 ? 'bg-slate-700' : pack.soh > 60 ? 'bg-amber-500' : 'bg-rose-500';
 
   return (
-    <div className={`bg-white rounded-xl border shadow-sm overflow-hidden ${pack.demo ? 'border-amber-300 ring-1 ring-amber-100' : pack.stale ? 'border-slate-300' : 'border-gray-200'}`}>
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${pack.demo ? 'border-amber-300 ring-1 ring-amber-100' : pack.stale ? 'border-slate-300' : 'border-gray-200'}`}>
       <div className={`h-0.5 ${accentColor}`} />
 
       <div className="p-5">
@@ -1161,41 +1544,43 @@ const PackDetail = ({ pack, packId, chartData, thermalHistory }) => {
     return () => { cancelled = true; };
   }, [packId]);
 
+  // Per-pack gauge inputs + a single-pack health summary for the gauges panel.
+  const gauges = gaugeInputsFor([pack]);
+  const packAlerts = {
+    critical: pack.status === 'alert' ? 1 : 0,
+    warnings: pack.status === 'caution' ? 1 : 0,
+  };
+
   return (
     <div className="space-y-6">
       {/* Battery % chart */}
       <BatteryRangeChart data={chartData} />
 
-      {/* Compact pack summary + cell grid (matches GroupCard sizing) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+      {/* Pack summary + charge stats + live gauges (fills the third column) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
         <PackSummaryCard pack={pack} />
 
         {/* Charge stats sit next to the pack configuration card */}
         <ChargeStatsCard pack={pack} chartData={chartData} dbStats={dbStats} />
+
+        {gauges && (
+          <MetricGauges {...gauges} alerts={packAlerts} orientation="col" subtitle="This pack" />
+        )}
       </div>
 
-      {/* Thermal heatmap — full-width, no card */}
-      <ThermalHeatmapPlotly series={thermalHistory || []} />
+      {/* Thermal heatmap — full-width, no card. Lazy-loaded (Plotly chunk). */}
+      <Suspense
+        fallback={
+          <div className="rounded-2xl bg-white p-6 text-sm text-gray-400 shadow-sm ring-1 ring-gray-200/70">
+            Loading thermal map…
+          </div>
+        }
+      >
+        <ThermalHeatmapPlotly series={thermalHistory || []} />
+      </Suspense>
     </div>
   );
 };
-
-// Stat tile for the summary view. Module scope = stable component identity
-// across renders, so the cards don't remount on every 3s poll.
-const StatCard = ({ title, value, icon: Icon, color, subtitle }) => (
-  <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-    <div className="flex items-center justify-between">
-      <div>
-        <p className="text-gray-500 text-sm font-medium">{title}</p>
-        <p className="text-2xl font-bold text-gray-900 mt-1">{value}</p>
-        {subtitle && <p className="text-xs text-gray-400 mt-1">{subtitle}</p>}
-      </div>
-      <div className={`p-3 rounded-lg ${color}`}>
-        <Icon className="w-6 h-6 text-white" />
-      </div>
-    </div>
-  </div>
-);
 
 // =============================================================================
 // Export Panel — pick a pack + time range, preview rows, download CSV.
@@ -1427,6 +1812,7 @@ const Dashboard = () => {
   const [rangeData, setRangeData] = useState([]);
   const [groups, setGroups] = useState([]);
   const [showGroupModal, setShowGroupModal] = useState(false);
+  const [editPack, setEditPack] = useState(null); // pack whose specs window is open
   const [selectedPackId, setSelectedPackId] = useState(null);
   const [packRangeData, setPackRangeData] = useState({});
   const [packThermalHistory, setPackThermalHistory] = useState({});
@@ -1858,10 +2244,15 @@ const Dashboard = () => {
     };
   }, [batteryPacks]);
 
-  // (StatCard is hoisted to module scope — see above — so it isn't recreated
-  // each render, which used to remount the stat cards on every 3s poll.
-  // AlarmHistory and DashboardOverview are invoked as plain functions at their
-  // call sites for the same reason; neither uses hooks, so this is safe.)
+  // Inputs for the top Voltage / Current / Power gauges (aggregate over all
+  // active packs). Null when there are no packs so the panel is skipped.
+  const gaugeData = useMemo(() => gaugeInputsFor(batteryPacks), [batteryPacks]);
+
+  // (Gauge/MetricGauges and the other stat tiles live at module scope — see
+  // above — so they aren't recreated each render, which used to remount the
+  // cards on every 3s poll. AlarmHistory and DashboardOverview are invoked as
+  // plain functions at their call sites for the same reason; neither uses
+  // hooks, so this is safe.)
   const AlarmHistory = ({ alarms, onClear }) => {
     const sevStyle = {
       critical: 'bg-rose-50 text-rose-700 border-rose-200',
@@ -1939,30 +2330,10 @@ const Dashboard = () => {
   // Dashboard Overview Component
   const DashboardOverview = () => (
     <div className="space-y-8">
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <StatCard
-          title="Total Power"
-          value={formatPower(stats.totalPower)}
-          icon={Zap}
-          color="bg-blue-500"
-        />
-        <StatCard
-          title="Total Current"
-          value={`${stats.totalCurrent} A`}
-          icon={Activity}
-          color="bg-green-500"
-        />
-        <StatCard
-          title="Active Alerts"
-          value={stats.alerts.critical + stats.alerts.warnings}
-          icon={AlertTriangle}
-          color={stats.alerts.critical > 0 ? "bg-red-500" : "bg-yellow-500"}
-          subtitle={`${stats.alerts.critical} critical, ${stats.alerts.warnings} warnings`}
-        />
-      </div>
+      {/* Voltage / Current / Power gauges (blended panel) + pack-health chip */}
+      {gaugeData && <MetricGauges {...gaugeData} alerts={stats.alerts} />}
 
-      {/* Battery % vs Miles Driven */}
+      {/* Battery % vs time */}
       <BatteryRangeChart data={rangeData} />
 
       {/* Pack Groups (or fallback Pack) · Charge Stats · Pack Activity */}
@@ -2098,6 +2469,8 @@ const Dashboard = () => {
                       setSelectedPackId(pack.pack_identifier);
                       setActiveTab('pack');
                     }}
+                    onContextMenu={(e) => { e.preventDefault(); setEditPack(pack); }}
+                    title="Right-click to edit specs"
                     className={`group flex items-center gap-2 px-2 py-1.5 rounded-md text-sm cursor-pointer transition-colors ${
                       isActive ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-50'
                     }`}
@@ -2107,6 +2480,13 @@ const Dashboard = () => {
                       <div className={`font-medium truncate ${isActive ? 'text-blue-700' : 'text-gray-700'}`}>{pack.name}</div>
                       <div className="text-[10px] text-gray-400">{pack.series_count}S{pack.parallel_count}P</div>
                     </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setEditPack(pack); }}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-blue-600 transition"
+                      title="Edit specs"
+                    >
+                      <Settings className="h-3 w-3" />
+                    </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDeletePack(pack.id); }}
                       disabled={deletingPackId === pack.id}
@@ -2315,6 +2695,17 @@ const Dashboard = () => {
         onClose={() => setShowGroupModal(false)}
         onSaved={fetchGroups}
         packs={userPacks}
+      />
+
+      {/* Pack Specs (edit) Modal — opened via right-click / specs icon */}
+      <EditPackModal
+        isOpen={!!editPack}
+        pack={editPack}
+        onClose={() => setEditPack(null)}
+        onSaved={() => {
+          fetchUserPacks();
+          setRefreshKey((k) => k + 1);
+        }}
       />
     </div>
   );

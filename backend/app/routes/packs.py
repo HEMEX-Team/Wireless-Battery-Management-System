@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user
 from app.models.database import get_db
 from app.models.models import User, Pack, Reading, BatteryReading
-from app.models.schemas import FirmwareDispatchRequest, PackCreate, PackClaim, PackResponse
+from app.models.schemas import FirmwareDispatchRequest, PackCreate, PackUpdate, PackClaim, PackResponse
 from app.routes.firmware import dispatch_ota
 
 router = APIRouter(prefix="/v1/packs", tags=["packs"])
@@ -83,10 +83,35 @@ def create_pack(
         pairing_code=pairing_code,
         series_count=pack_data.series_count,
         parallel_count=pack_data.parallel_count,
+        cell_nominal_voltage=pack_data.cell_nominal_voltage,
+        cell_capacity_ah=pack_data.cell_capacity_ah,
+        max_discharge_c=pack_data.max_discharge_c,
         user_id=current_user.id,
         auto_created=False,
     )
     db.add(pack)
+    db.commit()
+    db.refresh(pack)
+    return pack
+
+
+@router.patch("/{pack_id}", response_model=PackResponse)
+def update_pack(
+    pack_id: int,
+    pack_data: PackUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Edit a pack's name / config / cell specs (the pack-specs window). Only the
+    fields present in the request body are applied."""
+    pack = db.query(Pack).filter(Pack.id == pack_id, Pack.user_id == current_user.id).first()
+    if not pack:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pack not found")
+
+    updates = pack_data.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(pack, field, value)
+
     db.commit()
     db.refresh(pack)
     return pack
@@ -290,6 +315,10 @@ def get_latest_pack_data(
             "config": f"{series}S{parallel}P ({total_cells} cells)",
             "series": str(series),
             "parallel": str(parallel),
+            # Per-cell specs for gauge redlines (None when not configured yet).
+            "cell_nominal_voltage": pack.cell_nominal_voltage,
+            "cell_capacity_ah": pack.cell_capacity_ah,
+            "max_discharge_c": pack.max_discharge_c,
             "cells": cells,
             "thermistors": thermistors,
             "protections": protections,

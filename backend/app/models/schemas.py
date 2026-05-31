@@ -36,6 +36,21 @@ class PackCreate(BaseModel):
     pairing_code: str = ""
     series_count: int = 3
     parallel_count: int = 1
+    # Optional per-cell specs (used to compute the dashboard gauge redlines).
+    cell_nominal_voltage: Optional[float] = None
+    cell_capacity_ah: Optional[float] = None
+    max_discharge_c: Optional[float] = None
+
+
+class PackUpdate(BaseModel):
+    """Partial update for the pack-specs window. All fields optional; only the
+    provided ones are applied."""
+    name: Optional[str] = None
+    series_count: Optional[int] = None
+    parallel_count: Optional[int] = None
+    cell_nominal_voltage: Optional[float] = None
+    cell_capacity_ah: Optional[float] = None
+    max_discharge_c: Optional[float] = None
 
 
 class PackClaim(BaseModel):
@@ -51,6 +66,9 @@ class PackResponse(BaseModel):
     master_firmware_version: Optional[str] = None
     series_count: int
     parallel_count: int
+    cell_nominal_voltage: Optional[float] = None
+    cell_capacity_ah: Optional[float] = None
+    max_discharge_c: Optional[float] = None
     user_id: Optional[int] = None
     auto_created: bool = False
 

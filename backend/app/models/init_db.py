@@ -16,6 +16,10 @@ log = logging.getLogger("wbms.initdb")
 _LIGHTWEIGHT_MIGRATIONS = [
     ("packs", "master_pairing_code", "VARCHAR(10)"),
     ("packs", "master_firmware_version", "VARCHAR(32)"),
+    # Per-cell specs for gauge redlines (NULL on existing rows → constant fallback).
+    ("packs", "cell_nominal_voltage", "FLOAT"),
+    ("packs", "cell_capacity_ah", "FLOAT"),
+    ("packs", "max_discharge_c", "FLOAT"),
     ("readings", "temp1", "FLOAT"),
     ("readings", "temp2", "FLOAT"),
     ("readings", "temp3", "FLOAT"),

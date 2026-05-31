@@ -49,6 +49,13 @@ class Pack(Base):
     master_firmware_version = Column(String(32), nullable=True)
     series_count = Column(Integer, nullable=False, default=3)
     parallel_count = Column(Integer, nullable=False, default=1)
+    # Manually-entered cell specs used to compute the dashboard gauge redlines.
+    # All nullable: packs created before this feature fall back to a constant.
+    #   rated current (A) = max_discharge_c × cell_capacity_ah × parallel_count
+    #   full voltage  (V) = series_count × 4.2 (cell full-charge)
+    cell_nominal_voltage = Column(Float, nullable=True)  # per-cell nominal V, e.g. 3.6
+    cell_capacity_ah = Column(Float, nullable=True)      # per-cell capacity Ah, e.g. 3.5
+    max_discharge_c = Column(Float, nullable=True)       # max continuous discharge C-rate
     user_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL"),

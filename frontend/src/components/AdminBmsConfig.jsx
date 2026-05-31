@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from '../lib/api';
-import { AlertTriangle, RefreshCw, ShieldAlert, Zap, Battery, Moon, Sliders, Activity } from 'lucide-react';
+import { AlertTriangle, RefreshCw, ShieldAlert, Zap, Moon, Sliders, Activity } from 'lucide-react';
 
 // SCD threshold/delay dropdown values (enum index -> label), mirroring the AP.
 const SCD_AMPS = [10, 20, 40, 60, 80, 100, 125, 150, 175, 200];
@@ -58,7 +58,7 @@ export default function AdminBmsConfig({ packs = [] }) {
       setSnapshot(d.payload);
       setSnapAge(d.age_s);
       if (d.age_s != null) setOnline(d.age_s < 30);
-    } catch (e) { /* leave last snapshot */ }
+    } catch { /* keep the last snapshot on a transient error */ }
   }, [packId]);
 
   useEffect(() => {

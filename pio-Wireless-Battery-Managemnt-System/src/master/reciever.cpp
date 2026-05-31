@@ -259,6 +259,10 @@ void openConfigPortalOnDemand()
   else
   {
     Serial.println("[WiFi] Portal exited without a connection");
+    // The portal tore down the discovery AP on entry (softAPdisconnect above);
+    // rebuild it so slaves can still scan for our channel even though WiFi is
+    // down. Otherwise the master would run AP-less until a channel change.
+    startDiscoveryAP();
   }
 }
 
@@ -566,6 +570,12 @@ String buildJsonPayload(int senderIndex, const DeviceMessage &data, float soc)
   json += "\"temp3\":" + String(data.temp3) + ",";
   json += "\"isCharging\":" + String(data.isCharging ? "true" : "false") + ",";
   json += "\"isDischarging\":" + String(data.isDischarging ? "true" : "false") + ",";
+  json += "\"soh\":" + String(data.soh, 1) + ",";
+  // Raw BQ76952 Safety Status bytes (latched faults). The cloud decodes these
+  // into named protection alerts (OC/OV/UV/SC/OT/UT...).
+  json += "\"ssA\":" + String(data.ss_a) + ",";
+  json += "\"ssB\":" + String(data.ss_b) + ",";
+  json += "\"ssC\":" + String(data.ss_c) + ",";
   json += "\"soc\":" + String(soc, 1) + ",";
   json += "\"message\":\"" + msg + "\"";
   json += "}";
@@ -672,7 +682,7 @@ void setup()
 
   // ── MQTT setup ──
   mqtt.setServer(MQTT_BROKER, MQTT_PORT);
-  mqtt.setBufferSize(512);
+  mqtt.setBufferSize(1024);  // headroom for 16-cell payloads + soh/ssA/ssB/ssC + long status
   mqtt.setCallback(mqttCallback);
   connectMqtt();
 

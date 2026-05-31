@@ -212,7 +212,12 @@ def _latest_cells_for_pack(db: Session, pack: Pack) -> list[dict]:
     cells = []
     for cr in sorted(cell_readings, key=lambda x: x.battery_position):
         v = cr.voltage
-        status_ = "caution" if v < 3.3 or v > 4.1 else "safe"
+        if v < 3.0 or v > 4.25:
+            status_ = "alert"
+        elif v < 3.3 or v > 4.1:
+            status_ = "caution"
+        else:
+            status_ = "safe"
         cells.append({"value": f"{v:.2f}", "status": status_, "pack_id": pack.id, "pack_name": pack.name})
     # Mock fill when no real cell readings exist
     while len(cells) < total_cells:

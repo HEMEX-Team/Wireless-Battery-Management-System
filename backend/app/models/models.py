@@ -122,7 +122,15 @@ class Reading(Base):
     ekf_soc = Column(Float, nullable=False)
     power = Column(Float, nullable=True)
     charging_discharging = Column(Boolean, nullable=True)
-    
+    # Coulomb-counter accumulators reported by firmware (charge in Ah, time in s).
+    charge = Column(Float, nullable=True)
+    charge_time = Column(Integer, nullable=True)
+    # BQ76952 latched Safety Status bytes (0x03/0x05/0x07); 0/None = no fault.
+    # Decoded into named protection alerts on the serve side.
+    ss_a = Column(Integer, nullable=True)
+    ss_b = Column(Integer, nullable=True)
+    ss_c = Column(Integer, nullable=True)
+
     # Relationship - Many Readings belong to one Pack
     pack = relationship("Pack", back_populates="readings")
     

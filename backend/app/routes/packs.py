@@ -23,6 +23,45 @@ router = APIRouter(prefix="/v1/packs", tags=["packs"])
 STALE_AFTER_SECONDS = 30
 
 
+# Latched BQ76952 Safety Status bit -> (code, human label). These are the
+# protections that today only show on the slave's local AP; the master now
+# forwards the raw bytes (ssA/ssB/ssC) so the cloud can alert on them.
+_SS_A_BITS = {
+    7: ("SCD", "Short-Circuit in Discharge"), 6: ("OCD2", "Overcurrent in Discharge 2"),
+    5: ("OCD1", "Overcurrent in Discharge 1"), 4: ("OCC", "Overcurrent in Charge"),
+    3: ("COV", "Cell Overvoltage"), 2: ("CUV", "Cell Undervoltage"),
+    1: ("SFD", "Secondary Fault Detected"), 0: ("OTP", "OTP Access Fault"),
+}
+_SS_B_BITS = {
+    7: ("OTF", "Overtemperature FET"), 6: ("OTINT", "Overtemperature Internal"),
+    5: ("OTD", "Overtemperature in Discharge"), 4: ("OTC", "Overtemperature in Charge"),
+    2: ("UTINT", "Undertemperature Internal"), 1: ("UTD", "Undertemperature in Discharge"),
+    0: ("UTC", "Undertemperature in Charge"),
+}
+_SS_C_BITS = {
+    7: ("HWDF", "Hardware Diagnostic Fault"), 6: ("PTO", "Precharge Timeout"),
+    5: ("COVL", "Cell Overvoltage Latch"), 3: ("SCDL", "Short-Circuit Discharge Latch"),
+    2: ("OCDL", "Overcurrent Discharge Latch"),
+}
+
+
+def decode_protections(ss_a, ss_b, ss_c) -> list:
+    """Decode latched Safety Status bytes into active protection faults, e.g.
+    [{"code": "OCD1", "label": "Overcurrent in Discharge 1"}]. Empty == no fault."""
+    out = []
+    for reg, bits in ((ss_a, _SS_A_BITS), (ss_b, _SS_B_BITS), (ss_c, _SS_C_BITS)):
+        if not reg:
+            continue
+        try:
+            reg = int(reg)
+        except (TypeError, ValueError):
+            continue
+        for bit, (code, label) in bits.items():
+            if reg & (1 << bit):
+                out.append({"code": code, "label": label})
+    return out
+
+
 @router.post("", response_model=PackResponse, status_code=status.HTTP_201_CREATED)
 def create_pack(
     pack_data: PackCreate,
@@ -142,8 +181,8 @@ def get_latest_pack_data(
             age_s = (now_utc - latest_reading.timestamp).total_seconds()
             stale = age_s > STALE_AFTER_SECONDS
             last_update = latest_reading.timestamp.replace(microsecond=0).isoformat() + "Z"
-            soc = int(latest_reading.soc)
-            soh = int(latest_reading.soh)
+            soc = round(latest_reading.soc)
+            soh = round(latest_reading.soh)
             voltage = f"{latest_reading.v_real:.2f}"
             current_val = f"{latest_reading.current:.2f}"
             temp = f"{latest_reading.temperature:.2f}"
@@ -185,7 +224,15 @@ def get_latest_pack_data(
                 cells = []
                 for cr in sorted(cell_readings, key=lambda x: x.battery_position):
                     v = cr.voltage
-                    cell_status = "caution" if v < 3.3 or v > 4.1 else "safe"
+                    # Three bands so a severe single-cell excursion renders red
+                    # ('alert') and raises the "Cell Out of Range" alarm, instead
+                    # of being capped at amber 'caution'.
+                    if v < 3.0 or v > 4.25:
+                        cell_status = "alert"
+                    elif v < 3.3 or v > 4.1:
+                        cell_status = "caution"
+                    else:
+                        cell_status = "safe"
                     cells.append({"value": f"{v:.2f}", "status": cell_status})
                 # Pad if not enough cell readings
                 while len(cells) < total_cells:
@@ -195,8 +242,13 @@ def get_latest_pack_data(
             else:
                 cells = _mock_cells(total_cells, rng)
 
+            # Active BQ76952 protection faults (latched) forwarded from the BMS.
+            protections = decode_protections(
+                latest_reading.ss_a, latest_reading.ss_b, latest_reading.ss_c
+            )
+
             pack_status = "safe"
-            if soc < 20 or soh < 80:
+            if protections or soc < 20 or soh < 80:
                 pack_status = "alert"
             elif soc < 40 or soh < 90:
                 pack_status = "caution"
@@ -223,6 +275,7 @@ def get_latest_pack_data(
             ]
             cells = _mock_cells(total_cells, rng)
             pack_status = "safe"
+            protections = []
 
         battery_packs.append({
             "name": pack.name,
@@ -238,6 +291,7 @@ def get_latest_pack_data(
             "parallel": str(parallel),
             "cells": cells,
             "thermistors": thermistors,
+            "protections": protections,
             "demo": demo,
             "stale": stale,
             "last_update": last_update,
@@ -379,6 +433,7 @@ def get_pack_charge_stats(
             "current_soc": None, "current_soh": None,
             "last_charged": None, "last_charged_to": None,
             "time_to_empty_min": None, "cycles": 0, "based_on_rows": 0,
+            "accumulated_charge_ah": None, "charge_time_s": None,
         }
 
     current_soc = latest.soc
@@ -431,6 +486,9 @@ def get_pack_charge_stats(
         "time_to_empty_min": time_to_empty_min,
         "cycles": cycles,
         "based_on_rows": len(flag_rows),
+        # Real coulomb-counter accumulators from the BQ76952 (previously dropped).
+        "accumulated_charge_ah": round(latest.charge, 3) if latest.charge is not None else None,
+        "charge_time_s": latest.charge_time,
     }
 
 

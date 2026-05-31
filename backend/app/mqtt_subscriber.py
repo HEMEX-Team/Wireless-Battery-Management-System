@@ -196,8 +196,39 @@ def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
     else:
         temperature = _as_float("chipTemp") or 0.0
 
-    soc = _estimate_soc(list(cell_voltages.values()))
-    soh = 100.0  # no long-term health estimate yet
+    # Prefer the master's EKF SoC (published as 'soc'); only fall back to a
+    # linear estimate for old firmware that doesn't send it.
+    soc = _as_float("soc")
+    if soc is None:
+        soc = _estimate_soc(list(cell_voltages.values()))
+    # Real SOH from the slave's SOHTracker (published as 'soh'); 100 if absent.
+    soh = _as_float("soh")
+    if soh is None:
+        soh = 100.0
+
+    # Coulomb-counter accumulators as reported by firmware.
+    charge_ah = _as_float("charge")
+    raw_charge_time = payload.get("chargeTime")
+    try:
+        charge_time_s = int(raw_charge_time) if raw_charge_time is not None else None
+    except (TypeError, ValueError):
+        charge_time_s = None
+
+    # Latched BQ76952 Safety Status bytes -> persisted so the cloud can raise
+    # named protection alerts (OC/OV/UV/SC/OT/UT...).
+    def _as_u8(key: str) -> Optional[int]:
+        val = payload.get(key)
+        if val is None:
+            return None
+        try:
+            return int(val) & 0xFF
+        except (TypeError, ValueError):
+            return None
+
+    ss_a = _as_u8("ssA")
+    ss_b = _as_u8("ssB")
+    ss_c = _as_u8("ssC")
+
     power = v_real * current_a
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -217,6 +248,11 @@ def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
         ekf_soc=soc,
         power=power,
         charging_discharging=_charging_discharging_flag(payload),
+        charge=charge_ah,
+        charge_time=charge_time_s,
+        ss_a=ss_a,
+        ss_b=ss_b,
+        ss_c=ss_c,
     )
     db.add(reading)
 

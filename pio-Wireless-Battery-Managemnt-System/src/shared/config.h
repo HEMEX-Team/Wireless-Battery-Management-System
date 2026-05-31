@@ -70,6 +70,11 @@ typedef struct
   bool isCharging;
   bool isDischarging;
   char message[50];
+  // --- appended fields (reflash BOTH nodes when changing; size is validated) ---
+  float soh;     // State of Health (%) from the slave's SOHTracker (sohEngine)
+  uint8_t ss_a;  // BQ76952 Safety Status A (0x03), latched: SCD/OCD2/OCD1/OCC/COV/CUV/SFD/OTP
+  uint8_t ss_b;  // BQ76952 Safety Status B (0x05), latched: OTF/OTINT/OTD/OTC/UTINT/UTD/UTC
+  uint8_t ss_c;  // BQ76952 Safety Status C (0x07), latched: HWDF/PTO/COVL/PCHGOVR/SCDL/OCDL
 } __attribute__((packed)) DeviceMessage;
 
 // ==================== MASTER -> SLAVE HEARTBEAT ====================
@@ -95,5 +100,6 @@ const uint32_t HEARTBEAT_TIMEOUT_MS     = 5000;  // online: no heartbeat this lo
 const uint32_t RECOVERY_HOP_INTERVAL_MS = 20000; // offline: how often to hop back and probe the master
 const uint32_t RECOVERY_LISTEN_MS       = 1200;  // offline: listen window per hop (kept < AP-client patience)
 const int      RECOVERY_GOOD_HOPS       = 2;     // consecutive good hops required before tearing down the AP (hysteresis)
+const int      RESCAN_AFTER_FAILED_HOPS = 2;     // offline: after this many failed hops on the cached channel, rescan the master's SSID for its (possibly new) channel — recovers from a router channel reassignment
 
 #endif

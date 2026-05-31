@@ -19,6 +19,11 @@ _LIGHTWEIGHT_MIGRATIONS = [
     ("readings", "temp1", "FLOAT"),
     ("readings", "temp2", "FLOAT"),
     ("readings", "temp3", "FLOAT"),
+    ("readings", "charge", "FLOAT"),
+    ("readings", "charge_time", "INTEGER"),
+    ("readings", "ss_a", "INTEGER"),
+    ("readings", "ss_b", "INTEGER"),
+    ("readings", "ss_c", "INTEGER"),
     # Existing rows default to the regular 'user' role.
     ("users", "role", "VARCHAR(20) DEFAULT 'user' NOT NULL"),
 ]

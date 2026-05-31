@@ -1123,6 +1123,23 @@ const PackSummaryCard = ({ pack }) => {
         {/* Cell grid */}
         <BatteryGrid cells={pack.cells} config={pack.config} series={pack.series} parallel={pack.parallel} />
 
+        {Array.isArray(pack.protections) && pack.protections.length > 0 && (
+          <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-2.5 py-2">
+            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-rose-700 uppercase tracking-wide">
+              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+              BMS Protection Active
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {pack.protections.map((p) => (
+                <span key={p.code} title={p.label}
+                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-300">
+                  {p.code}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         {pack.demo && (
           <p className="mt-4 flex items-center gap-1.5 text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5">
             <span className="h-1.5 w-1.5 rounded-full bg-amber-400 flex-shrink-0" />
@@ -1788,6 +1805,24 @@ const Dashboard = () => {
         });
       }
       currentSignals.cellAlerts = cellAlerts > 0;
+
+      // BQ76952 hardware protection faults (OC/OV/UV/SC/OT/UT...) forwarded from
+      // the BMS over the live link. Raise one critical alarm per newly-active
+      // protection so the website surfaces them when online (not just the AP).
+      const prots = Array.isArray(pack.protections) ? pack.protections : [];
+      const protKey = prots.map(p => p.code).sort().join(',');
+      if (protKey && protKey !== prev.protKey) {
+        prots.forEach(p => newAlarms.push({
+          id: `${pack.id}-prot-${p.code}-${now.getTime()}`,
+          time: now.toISOString(),
+          packId: pack.id,
+          packName: pack.name,
+          severity: 'critical',
+          type: `Protection: ${p.code}`,
+          cause: `${p.label} protection tripped on the BMS`,
+        }));
+      }
+      currentSignals.protKey = protKey;
 
       lastAlarmStates.current[pack.id] = currentSignals;
     });

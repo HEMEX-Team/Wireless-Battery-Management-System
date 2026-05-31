@@ -186,6 +186,7 @@ uint8_t pfA_val = 0, pfB_val = 0, pfC_val = 0, pfD_val = 0; // PF Status
 uint16_t controlStatus = 0;     // Control Status (0x00) for LD_TIMEOUT
 unsigned int ldPinVoltage = 0;  // Direct Command 0x38 (LD Pin)
 uint8_t powerMode = 0;          // 0=Active, 1=Sleep, 2=DeepSleep, 3=Shutdown
+float g_soh_pct = 100.0f;        // Latest SOH (%) from sohEngine, mirrored for ESP-NOW uplink
 
 // Fault Snapshot Variables
 bool snapshotTaken = false;
@@ -1042,6 +1043,7 @@ void loop() {
     float max_temp_C = max(temp1, max(temp2, max(temp3, temp_hdq))); // Use highest thermistor reading
     if (max_temp_C < 5.0f || max_temp_C > 80.0f) max_temp_C = chipTemp; // Fallback if thermistors disconnected
     sohEngine.trackEnvironmentalDamage(current_A, max_temp_C, 1.0f);
+    g_soh_pct = sohEngine.getSOH();  // mirror for the cloud uplink (packDeviceMessage)
 
     // Periodically save SOH state to NVS (every 5 minutes)
     static uint32_t lastSohSave = 0;

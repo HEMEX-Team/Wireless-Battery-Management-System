@@ -352,6 +352,88 @@ def get_pack_readings(
     }
 
 
+@router.get("/{pack_id}/charge-stats")
+def get_pack_charge_stats(
+    pack_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Charge statistics for one owned pack, computed from stored DB readings
+    (not a client-side session series). Uses cheap queries plus one bounded scan
+    for the cycle count so it stays fast on large telemetry tables.
+    """
+    pack = db.query(Pack).filter(
+        Pack.id == pack_id, Pack.user_id == current_user.id
+    ).first()
+    if not pack:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pack not found")
+
+    latest = (
+        db.query(Reading)
+        .filter(Reading.pack_id == pack.id)
+        .order_by(Reading.timestamp.desc())
+        .first()
+    )
+    if latest is None:
+        return {
+            "current_soc": None, "current_soh": None,
+            "last_charged": None, "last_charged_to": None,
+            "time_to_empty_min": None, "cycles": 0, "based_on_rows": 0,
+        }
+
+    current_soc = latest.soc
+    current_amps = latest.current
+
+    # Time to empty: only meaningful while discharging (negative current).
+    ASSUMED_CAPACITY_AH = 20.0
+    time_to_empty_min = None
+    if current_amps is not None and current_amps < -0.05 and current_soc:
+        hours_left = (current_soc / 100.0) * ASSUMED_CAPACITY_AH / abs(current_amps)
+        time_to_empty_min = round(hours_left * 60.0, 1)
+
+    # Last charge: most recent reading flagged as charging. 'Z' marks UTC so the
+    # browser renders "time since" correctly regardless of its timezone.
+    last_chg = (
+        db.query(Reading)
+        .filter(Reading.pack_id == pack.id, Reading.charging_discharging.is_(True))
+        .order_by(Reading.timestamp.desc())
+        .first()
+    )
+    last_charged = None
+    last_charged_to = None
+    if last_chg is not None:
+        last_charged = last_chg.timestamp.replace(microsecond=0).isoformat() + "Z"
+        last_charged_to = round(last_chg.soc, 1) if last_chg.soc is not None else None
+
+    # Cycle count: count rising edges of the charging flag over a bounded recent
+    # window (telemetry is ~2 Hz, so cap the scan rather than read the whole table).
+    CYCLE_WINDOW_ROWS = 20000
+    flag_rows = (
+        db.query(Reading.charging_discharging)
+        .filter(Reading.pack_id == pack.id)
+        .order_by(Reading.timestamp.desc())
+        .limit(CYCLE_WINDOW_ROWS)
+        .all()
+    )
+    cycles = 0
+    prev_charging = False
+    for (flag,) in reversed(flag_rows):  # walk oldest -> newest
+        charging = flag is True
+        if charging and not prev_charging:
+            cycles += 1
+        prev_charging = charging
+
+    return {
+        "current_soc": round(current_soc, 1) if current_soc is not None else None,
+        "current_soh": round(latest.soh, 1) if latest.soh is not None else None,
+        "last_charged": last_charged,
+        "last_charged_to": last_charged_to,
+        "time_to_empty_min": time_to_empty_min,
+        "cycles": cycles,
+        "based_on_rows": len(flag_rows),
+    }
+
+
 def _mock_cells(count: int, rng: random.Random) -> list:
     cells = []
     for _ in range(count):

@@ -876,14 +876,26 @@ const deriveActivityEvents = (series) => {
 // =============================================================================
 // Charge Stats Card — renders next to the pack configuration card
 // =============================================================================
-const ChargeStatsCard = ({ pack, chartData }) => {
+const ChargeStatsCard = ({ pack, chartData, dbStats }) => {
   // Pull out the two primitives the memo actually uses so the dependency list
   // is exact (and lint-clean) without re-running when other pack fields churn.
   const { soc, current } = pack;
-  const stats = useMemo(
+  const derived = useMemo(
     () => deriveChargeStats(chartData, soc, current),
     [chartData, soc, current]
   );
+
+  // Prefer real DB-computed stats (passed by the per-pack detail view); fall
+  // back to the session-derived SOC series for the aggregate summary card.
+  const fromDb = !!dbStats;
+  const stats = fromDb
+    ? {
+        lastCharged: dbStats.last_charged,
+        lastChargedTo: dbStats.last_charged_to,
+        timeToEmptyMin: dbStats.time_to_empty_min,
+        cycles: dbStats.cycles,
+      }
+    : derived;
 
   const rows = [
     {
@@ -894,7 +906,7 @@ const ChargeStatsCard = ({ pack, chartData }) => {
     },
     {
       label: 'Charged to',
-      value: stats.lastChargedTo != null ? `${stats.lastChargedTo.toFixed(0)}%` : '—',
+      value: stats.lastChargedTo != null ? `${Number(stats.lastChargedTo).toFixed(0)}%` : '—',
       sub: 'peak SOC',
       Icon: BatteryCharging,
     },
@@ -907,7 +919,7 @@ const ChargeStatsCard = ({ pack, chartData }) => {
     {
       label: 'Charge cycles',
       value: String(stats.cycles),
-      sub: 'this session',
+      sub: fromDb ? 'from stored history' : 'this session',
       Icon: Repeat,
     },
   ];
@@ -922,7 +934,7 @@ const ChargeStatsCard = ({ pack, chartData }) => {
           </div>
           <div>
             <h3 className="text-base font-semibold text-gray-900">Charge Stats</h3>
-            <p className="text-xs text-gray-400">Recent charge activity</p>
+            <p className="text-xs text-gray-400">{fromDb ? 'From stored readings' : 'Recent charge activity'}</p>
           </div>
         </div>
 
@@ -1129,7 +1141,20 @@ const PackSummaryCard = ({ pack }) => {
 };
 
 // Tesla-style Pack Detail
-const PackDetail = ({ pack, chartData, thermalHistory }) => {
+const PackDetail = ({ pack, packId, chartData, thermalHistory }) => {
+  // Real charge stats computed by the backend from stored DB readings for this
+  // pack. Fetched on open (and when the selected pack changes); null until it
+  // arrives, in which case ChargeStatsCard falls back to the live-session derive.
+  const [dbStats, setDbStats] = useState(null);
+  useEffect(() => {
+    if (!packId) { setDbStats(null); return; }
+    let cancelled = false;
+    apiFetch(`/v1/packs/${packId}/charge-stats`)
+      .then((d) => { if (!cancelled) setDbStats(d); })
+      .catch(() => { if (!cancelled) setDbStats(null); });
+    return () => { cancelled = true; };
+  }, [packId]);
+
   return (
     <div className="space-y-6">
       {/* Battery % chart */}
@@ -1140,7 +1165,7 @@ const PackDetail = ({ pack, chartData, thermalHistory }) => {
         <PackSummaryCard pack={pack} />
 
         {/* Charge stats sit next to the pack configuration card */}
-        <ChargeStatsCard pack={pack} chartData={chartData} />
+        <ChargeStatsCard pack={pack} chartData={chartData} dbStats={dbStats} />
       </div>
 
       {/* Thermal heatmap — full-width, no card */}
@@ -2229,7 +2254,10 @@ const Dashboard = () => {
                 </div>
               );
             }
-            return <PackDetail pack={pack} chartData={packRangeData[pack.id] || []} thermalHistory={packThermalHistory[pack.id] || []} />;
+            // charge-stats endpoint needs the NUMERIC pack id; selectedPackId is
+            // the identifier string, so map it via userPacks.
+            const numericId = userPacks.find(u => u.pack_identifier === selectedPackId)?.id;
+            return <PackDetail pack={pack} packId={numericId} chartData={packRangeData[pack.id] || []} thermalHistory={packThermalHistory[pack.id] || []} />;
           })()}
         </main>
       </div>

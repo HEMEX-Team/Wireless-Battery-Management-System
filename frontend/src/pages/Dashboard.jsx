@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Battery, BatteryCharging, Zap, AlertTriangle, Activity, History, Clock, TrendingDown, AlertCircle, Home, BarChart3, RefreshCw, Plus, X, Trash2, LogOut, Layers, Unlink, Repeat, Moon, Gauge, Download } from 'lucide-react';
+import { Battery, BatteryCharging, Zap, AlertTriangle, Activity, History, Clock, TrendingDown, AlertCircle, Home, BarChart3, RefreshCw, Plus, X, Trash2, LogOut, Layers, Unlink, Repeat, Moon, Gauge, Download, Sliders } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Legend, Tooltip, CartesianGrid, AreaChart, Area } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch } from '../lib/api';
+import AdminBmsConfig from '../components/AdminBmsConfig';
 import ThermalHeatmapPlotly from '../components/charts/ThermalHeatmap';
 
 // Utility Components
@@ -2044,6 +2045,9 @@ const Dashboard = () => {
     { value: 'charts', label: 'Charts', icon: BarChart3 },
     { value: 'alerts', label: 'Alerts', icon: AlertCircle },
     { value: 'export', label: 'Export', icon: Download },
+    // Admin-only BMS console (mirrors the slave AP). Gated by DB role; the
+    // backend require_admin is the real enforcement, this just hides the tab.
+    ...(user?.role === 'admin' ? [{ value: 'admin', label: 'BMS Admin', icon: Sliders }] : []),
   ];
 
   return (
@@ -2279,6 +2283,7 @@ const Dashboard = () => {
           {activeTab === 'alerts' && AlarmHistory({ alarms, onClear: () => setAlarms([]) })}
 
           {activeTab === 'export' && <ExportPanel packs={userPacks} />}
+          {activeTab === 'admin' && user?.role === 'admin' && <AdminBmsConfig packs={userPacks} />}
 
           {activeTab === 'pack' && (() => {
             const pack = batteryPacks.find(p => p.id === selectedPackId);

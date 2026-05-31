@@ -17,6 +17,7 @@ from app.routes.auth import router as auth_router
 from app.routes.packs import router as packs_router
 from app.routes.groups import router as groups_router
 from app.routes.firmware import router as firmware_router
+from app.routes.bms_admin import router as bms_admin_router
 
 # Import models so Base knows about them
 from app.models import models  # noqa: F401
@@ -65,6 +66,7 @@ app.include_router(auth_router)
 app.include_router(packs_router)
 app.include_router(groups_router)
 app.include_router(firmware_router)
+app.include_router(bms_admin_router)
 
 
 @app.get("/")

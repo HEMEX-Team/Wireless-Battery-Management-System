@@ -54,3 +54,15 @@ def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency for admin-only routes (e.g. the cloud BMS console). `role` is
+    set in the DB only — no API path mutates it, so elevation is a deliberate
+    `UPDATE users SET role='admin'`."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return current_user

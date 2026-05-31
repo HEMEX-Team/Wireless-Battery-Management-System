@@ -50,7 +50,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.database import SessionLocal
-from app.models.models import BatteryReading, Pack, Reading
+from app.models.models import BatteryReading, Pack, Reading, BmsSnapshot, BmsCommand
 
 log = logging.getLogger("wbms.mqtt")
 
@@ -61,6 +61,7 @@ log = logging.getLogger("wbms.mqtt")
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_TOPIC = os.getenv("MQTT_TOPIC", "bms/data")
+MQTT_SNAPSHOT_TOPIC = os.getenv("MQTT_SNAPSHOT_TOPIC", "bms/snapshot")
 MQTT_USERNAME = os.getenv("MQTT_USERNAME") or None
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD") or None
 MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "wbms-backend")
@@ -339,9 +340,78 @@ def _handle_payload(raw: bytes) -> None:
 
         _update_master_metadata(db, pack, payload)
         _persist_reading(db, pack, payload)
+        _mark_command(db, pack, payload)
     except Exception:
         db.rollback()
         log.exception("Failed to persist MQTT reading for pack=%r", pairing_code)
+    finally:
+        db.close()
+
+
+def _mark_command(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
+    """Confirm dispatched admin commands. The slave echoes the last applied
+    command seq + result code (lastCmdSeq/lastCmdRc) in telemetry; mark all
+    still-pending commands with seq <= that applied (or failed if rc >= 10).
+    Idempotent — a no-op if nothing matches (e.g. ack arrived before the insert)."""
+    seq = payload.get("lastCmdSeq")
+    if seq is None:
+        return
+    try:
+        seq = int(seq)
+        rc = int(payload.get("lastCmdRc", 0))
+    except (TypeError, ValueError):
+        return
+    if seq <= 0:
+        return
+    pending = (
+        db.query(BmsCommand)
+        .filter(BmsCommand.pack_id == pack.id, BmsCommand.status == "pending", BmsCommand.seq <= seq)
+        .all()
+    )
+    if not pending:
+        return
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for cmd in pending:
+        # Only the exact-seq command carries the result code; earlier ones are
+        # inferred applied (the device processes commands in seq order).
+        cmd.status = ("failed" if rc >= 10 else "applied") if cmd.seq == seq else "applied"
+        cmd.acked_at = now
+    db.commit()
+
+
+def _handle_snapshot(raw: bytes) -> None:
+    """Persist an on-demand full BMS snapshot (one latest row per pack)."""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        log.warning("Dropping malformed snapshot payload: %s", exc)
+        return
+    if not isinstance(payload, dict):
+        return
+    pairing_code = _resolve_pairing_code(payload)
+    if not pairing_code:
+        log.warning("Snapshot has no valid pairingCode")
+        return
+
+    db = SessionLocal()
+    try:
+        pack = db.query(Pack).filter(Pack.pairing_code == pairing_code).first()
+        if pack is None:
+            log.warning("Snapshot for unknown pack %r, dropping", pairing_code)
+            return
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        body = json.dumps(payload)
+        row = db.query(BmsSnapshot).filter(BmsSnapshot.pack_id == pack.id).first()
+        if row is None:
+            db.add(BmsSnapshot(pack_id=pack.id, payload=body, received_at=now))
+        else:
+            row.payload = body
+            row.received_at = now
+        db.commit()
+        log.info("Stored BMS snapshot for pack %r", pairing_code)
+    except Exception:
+        db.rollback()
+        log.exception("Failed to store snapshot for pack=%r", pairing_code)
     finally:
         db.close()
 
@@ -352,8 +422,9 @@ def _handle_payload(raw: bytes) -> None:
 
 def _on_connect(client, _userdata, _flags, reason_code, _properties=None):
     # paho-mqtt v2 passes a ReasonCode; v1 passed an int. Both stringify.
-    log.info("MQTT connected (reason=%s), subscribing to %r", reason_code, MQTT_TOPIC)
+    log.info("MQTT connected (reason=%s), subscribing to %r + %r", reason_code, MQTT_TOPIC, MQTT_SNAPSHOT_TOPIC)
     client.subscribe(MQTT_TOPIC, qos=0)
+    client.subscribe(MQTT_SNAPSHOT_TOPIC, qos=1)  # snapshots are admin-requested; qos1
 
 
 def _on_disconnect(_client, _userdata, _flags, reason_code, _properties=None):
@@ -361,7 +432,10 @@ def _on_disconnect(_client, _userdata, _flags, reason_code, _properties=None):
 
 
 def _on_message(_client, _userdata, msg):
-    _handle_payload(msg.payload)
+    if msg.topic == MQTT_SNAPSHOT_TOPIC:
+        _handle_snapshot(msg.payload)
+    else:
+        _handle_payload(msg.payload)
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 # models.py
-from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, ForeignKey, Index, Table
+from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, ForeignKey, Index, Table, Text
 from sqlalchemy.orm import relationship
 from app.models.database import Base
 from datetime import datetime
@@ -173,4 +173,41 @@ class BatteryReading(Base):
     # Composite index for efficient queries
     __table_args__ = (
         Index('idx_pack_battery_timestamp', 'pack_id', 'battery_position', 'timestamp'),
+    )
+
+
+class BmsSnapshot(Base):
+    """Latest on-demand full read-only snapshot of a pack's BMS (the ~60-field
+    surface from the slave AP), one row per pack (upserted by the subscriber)."""
+    __tablename__ = "bms_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pack_id = Column(
+        Integer, ForeignKey("packs.id", ondelete="CASCADE"),
+        nullable=False, unique=True, index=True,
+    )
+    payload = Column(Text, nullable=False)  # raw JSON snapshot from firmware
+    received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BmsCommand(Base):
+    """Audit + status of an admin command dispatched to a pack's BMS. status
+    flips pending->applied/failed when the slave echoes lastCmdSeq in telemetry."""
+    __tablename__ = "bms_commands"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pack_id = Column(
+        Integer, ForeignKey("packs.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    seq = Column(Integer, nullable=False)
+    action = Column(String(40), nullable=False)
+    args = Column(Text, nullable=True)          # JSON of clamped args
+    status = Column(String(16), nullable=False, default="pending")  # pending|applied|failed|expired
+    issued_by = Column(String(255), nullable=True)  # admin email (audit trail)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    acked_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('idx_bms_cmd_pack_seq', 'pack_id', 'seq'),
     )

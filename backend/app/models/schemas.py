@@ -73,6 +73,11 @@ class FirmwareDispatchRequest(BaseModel):
     firmware_image_id: int
 
 
+class BmsCommandRequest(BaseModel):
+    action: str
+    args: dict = Field(default_factory=dict)
+
+
 class GroupCreate(BaseModel):
     name: str
     connection_type: Literal["parallel", "series"] = "parallel"

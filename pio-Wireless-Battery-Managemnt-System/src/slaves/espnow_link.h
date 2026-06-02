@@ -153,6 +153,31 @@ void espnowSetPeerChannel(uint8_t ch) {
   esp_now_add_peer(&peer);
 }
 
+// Re-establish ESP-NOW after a WiFi stop/restart. On ESP32, esp_wifi_stop()
+// — which the softAPdisconnect(true)/WiFi.mode() churn in our online<->offline
+// transitions triggers — silently DE-INITS ESP-NOW and drops every peer. Any
+// transition that brings the radio back up MUST call this, or esp_now_send()
+// returns ESP_ERR_ESPNOW_NOT_INIT forever: the slave keeps "sending" but nothing
+// leaves the radio, the TX-done callback never fires, so consecutiveFailures
+// stays frozen and the node-down fallback can never trip (mute-but-"online").
+// This is also why a slave booted BEFORE the master never reconnects: it goes
+// offline, and every recovery hop's probe + heartbeat-listen runs on a dead
+// radio. The peer is re-pinned to whatever channel the radio is currently on,
+// so callers just esp_wifi_set_channel() first and let this follow.
+void espnowReinit() {
+  esp_now_deinit();   // harmless if not currently inited; also clears stale peers
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("[LINK] ESP-NOW re-init failed; restarting");
+    ESP.restart();
+  }
+  esp_now_register_send_cb(espnowOnSent);
+  esp_now_register_recv_cb(espnowOnRecv);
+  uint8_t primary = FALLBACK_CHANNEL;
+  wifi_second_chan_t second;
+  if (esp_wifi_get_channel(&primary, &second) != ESP_OK) primary = FALLBACK_CHANNEL;
+  espnowSetPeerChannel(primary);
+}
+
 // ==================== STRUCT PACKING ====================
 // Map the rich dashboard reading down to the 15-ish fields that fit the
 // 152-byte ESP-NOW struct (guide Part 3). The local dashboard still serves
@@ -186,7 +211,7 @@ void enterOnline(uint8_t ch) {
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
   esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-  espnowSetPeerChannel(ch);
+  espnowReinit();   // WiFi was torn down above — ESP-NOW must be re-inited before we send
   portENTER_CRITICAL(&espnowMux);
   consecutiveFailures = 0;
   portEXIT_CRITICAL(&espnowMux);
@@ -233,13 +258,7 @@ void espnowSetup() {
   esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
 
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("[LINK] ESP-NOW init failed; restarting");
-    ESP.restart();
-  }
-  esp_now_register_send_cb(espnowOnSent);
-  esp_now_register_recv_cb(espnowOnRecv);
-  espnowSetPeerChannel(ch);
+  espnowReinit();   // init ESP-NOW + register callbacks + add peer on the scanned channel
 
   linkMode = LINK_ONLINE;
   onlineEnteredMs = millis();
@@ -252,7 +271,20 @@ void serviceOnline() {
   if (millis() - lastSendMs >= SEND_INTERVAL_MS) {
     lastSendMs = millis();
     packDeviceMessage();
-    esp_now_send(RECEIVER_ADDRESS, (uint8_t *)&espnowOut, sizeof(espnowOut));
+    esp_err_t sendErr = esp_now_send(RECEIVER_ADDRESS, (uint8_t *)&espnowOut, sizeof(espnowOut));
+    // A synchronous failure (classically ESP_ERR_ESPNOW_NOT_INIT after a WiFi
+    // restart) never reaches espnowOnSent, so consecutiveFailures would stay
+    // frozen and the fallback below could never trip. Count it here so node-down
+    // can still fire, and self-heal the NOT_INIT case on the spot.
+    if (sendErr != ESP_OK) {
+      portENTER_CRITICAL(&espnowMux);
+      consecutiveFailures++;
+      portEXIT_CRITICAL(&espnowMux);
+      if (sendErr == ESP_ERR_ESPNOW_NOT_INIT) {
+        Serial.println("[LINK] online send NOT_INIT -> re-init ESP-NOW");
+        espnowReinit();
+      }
+    }
   }
 
   // 2. Decide whether to fall back. Give a short grace window after going
@@ -309,7 +341,7 @@ void doRecoveryHop() {
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
   esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-  espnowSetPeerChannel(ch);
+  espnowReinit();   // STA radio just restarted — re-arm ESP-NOW before the probe + heartbeat listen
 
   unsigned long preHb = lastHeartbeatMs;
   packDeviceMessage();

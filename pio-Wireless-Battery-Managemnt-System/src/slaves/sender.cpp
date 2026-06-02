@@ -405,7 +405,7 @@ void readBMSData() {
   }
   chipTemp = bms.getInternalTemp();
   temp1 = bms.getThermistorTemp(TS1);
-  temp2 = (bms.directCommandRead(0x7C) / 10.0f) - 273.15f; // CFETOFF pin direct read
+  temp2 = bms.getThermistorTemp(HDQ); // HDQ thermistor (CFETOFF pin unpopulated — report HDQ in this slot)
   temp3 = bms.getThermistorTemp(TS3);
   temp_hdq = bms.getThermistorTemp(HDQ);
 

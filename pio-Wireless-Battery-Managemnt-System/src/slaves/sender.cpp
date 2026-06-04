@@ -890,6 +890,9 @@ void setup() {
   server.on("/api/ekf_reset", handleApiEKFReset);
   server.on("/api/config", HTTP_GET, handleApiConfigGet);
   server.on("/api/config", HTTP_POST, handleApiConfigPost);
+  // Captive-portal catch-all: redirect OS connectivity probes to the dashboard
+  // so phones don't flag the offline AP "no internet" and drop the connection.
+  server.onNotFound(handleCaptivePortal);
   server.begin();
 
   // 9. ADC SETTLING: Wait for ADC to stabilize after config writes

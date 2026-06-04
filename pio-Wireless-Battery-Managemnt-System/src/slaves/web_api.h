@@ -1101,6 +1101,18 @@ void handleRoot() {
   server.send_P(200, "text/html", INDEX_HTML);
 }
 
+// Captive-portal catch-all (registered via server.onNotFound). The OS
+// connectivity probes (/generate_204, /hotspot-detect.html, /ncsi.txt,
+// /connecttest.txt, …) hit unregistered paths; without this they 404, and
+// phones that enforce a connectivity check then decide the network is dead and
+// disconnect ("connecting… connection failed"). Redirecting every unknown path
+// to the dashboard makes the captive sign-in sheet open straight onto it.
+void handleCaptivePortal() {
+  String url = "http://" + WiFi.softAPIP().toString() + "/";
+  server.sendHeader("Location", url, true);
+  server.send(302, "text/plain", "");
+}
+
 void handleApiData() {
   float current_A = (float)bmsCurrent / 1000.0f; // bmsCurrent is in mA, convert to Amps
   float parasitic_correction_mv = 0.0f;

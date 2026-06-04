@@ -186,17 +186,52 @@ void runPortalUntilConnected()
 {
   Serial.println("[WiFi] Opening setup portal 'WBMS-Setup' (also retrying the saved network in the background)...");
   wm.setConfigPortalBlocking(false); // we drive it ourselves so we can also retry saved creds
-  wm.setConfigPortalTimeout(0);
+  wm.setConfigPortalTimeout(0);      // never time the portal out
+  wm.setWiFiAPChannel(1);            // pin the portal AP to a fixed, client-friendly channel
   wm.startConfigPortal("WBMS-Setup");
 
+  // CRITICAL for join reliability: the failed tryConnectSaved() that sent us here
+  // leaves the STA in auto-reconnect mode, so it keeps scanning every channel
+  // chasing the (still-down) saved network. On the ESP32's single radio that
+  // constant scanning drags the SoftAP off channel 1 almost continuously, so a
+  // phone gets "unable to join network" basically every time. Park the radio on
+  // the AP channel: stop auto-reconnect and drop the STA (saved creds stay in NVS).
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false /*keep radio on*/, false /*keep saved creds*/);
+  esp_wifi_set_ps(WIFI_PS_NONE);     // no modem-sleep -> stable SoftAP + DHCP while the user types
+
+  const bool haveSaved = wm.getWiFiIsSaved();
   unsigned long lastRetry = millis();
   while (WiFi.status() != WL_CONNECTED)
   {
-    wm.process(); // serve the portal; connects if the user submits a network
-    if (millis() - lastRetry > 15000)
+    wm.process(); // serve the portal; connects when the user submits a network
+
+    // Background auto-reconnect to the SAVED network — but ONLY while nobody is
+    // on the portal. The moment a phone associates to WBMS-Setup, a human is
+    // there to (re)configure, so we must NOT call WiFi.begin(): in AP_STA the STA
+    // scan it kicks off pulls the shared radio off the AP channel, dropping the
+    // SoftAP and closing the captive sheet under them — and if the old creds
+    // reconnect, the loop below exits and tears the portal down entirely. That
+    // was the "opens for a few seconds then auto-closes" bug. Pausing the retry
+    // keeps the portal persistent until the user actually submits credentials.
+    const bool portalInUse = (WiFi.softAPgetStationNum() > 0);
+    if (haveSaved && !portalInUse && millis() - lastRetry > 30000)
     {
       lastRetry = millis();
-      WiFi.begin(); // nudge a reconnect to the currently-saved network
+      WiFi.begin(); // one bounded scan+connect attempt at the saved network
+      // Give it a brief window, then RE-PARK if it didn't connect — otherwise the
+      // begin() above leaves the STA scanning again and we're back to dragging the
+      // SoftAP off-channel for the next 30 s. We only get here when no station is
+      // associated, so pausing wm.process() for a few seconds is harmless.
+      uint32_t attemptStart = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - attemptStart < 6000)
+        delay(50);
+      if (WiFi.status() != WL_CONNECTED)
+      {
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, false);
+        esp_wifi_set_ps(WIFI_PS_NONE);
+      }
     }
     delay(10);
   }

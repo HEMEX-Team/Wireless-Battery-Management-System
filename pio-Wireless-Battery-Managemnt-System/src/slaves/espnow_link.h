@@ -67,11 +67,18 @@ volatile uint8_t       masterChannel = FALLBACK_CHANNEL;
 
 unsigned long onlineEnteredMs = 0;
 unsigned long lastSendMs = 0;
-unsigned long lastHopMs = 0;
-int goodHops = 0;
-int failedHops = 0;   // consecutive failed recovery hops on the cached channel;
-                      // triggers an SSID rescan so a master channel change can't
-                      // strand us forever (see doRecoveryHop).
+unsigned long lastHopMs = 0;       // offline: last channel-recovery scan
+int goodHops = 0;                  // consecutive good recovery signals (hysteresis)
+
+// Offline-mode AP/recovery state. The offline AP runs in AP_STA on the master's
+// channel and STAYS UP: the idle STA interface still receives the master's 1 Hz
+// heartbeat (which the master unicasts to our STA MAC), so recovery is detected
+// PASSIVELY without ever tearing the SoftAP down. The old per-hop teardown was
+// the main cause of "AP connects on some phones, fails on others" — every
+// RECOVERY_HOP_INTERVAL_MS it deauthed connected clients and killed in-progress
+// DHCP. We only disturb the AP now for a real channel move (rare).
+uint8_t       apChannel = FALLBACK_CHANNEL;   // channel the SoftAP is actually on
+unsigned long lastHbCheckpoint = 0;           // last heartbeat ts we counted (edge-detect)
 
 // ==================== ADMIN COMMAND STATE ====================
 // Admin commands arrive on the WiFi-task recv callback but execute heavy BQ76952
@@ -212,6 +219,7 @@ void enterOnline(uint8_t ch) {
   WiFi.mode(WIFI_STA);
   esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
   espnowReinit();   // WiFi was torn down above — ESP-NOW must be re-inited before we send
+  esp_wifi_set_ps(WIFI_PS_NONE);   // no modem-sleep -> snappy, reliable ESP-NOW
   portENTER_CRITICAL(&espnowMux);
   consecutiveFailures = 0;
   portEXIT_CRITICAL(&espnowMux);
@@ -221,23 +229,53 @@ void enterOnline(uint8_t ch) {
   linkMode = LINK_ONLINE;
 }
 
-void enterOffline() {
-  Serial.println("[LINK] -> OFFLINE: raising local AP + dashboard");
-  // Pin the AP to the master's last-known channel (deterministic, and keeps the
-  // ESP-NOW peer aligned with the radio) instead of letting softAP() default to
-  // channel 1.
-  uint8_t apCh = masterChannel;
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(slaveApSsid, MB_AP_PASSWORD, apCh);
+// Raise (or re-home) the offline dashboard AP on `ch`, in AP_STA so the idle STA
+// interface can still hear the master's unicast heartbeat -> passive, teardown-
+// free recovery (the master unicasts the heartbeat to our STA MAC, which a pure
+// WIFI_AP slave cannot receive). Returns the channel the AP actually came up on:
+// under the default "01" regulatory domain the SoftAP cannot host ch 12-14, so
+// we fall back to a universally-legal channel instead of silently coming up
+// wrong (softAP()'s result was previously never checked).
+uint8_t raiseOfflineAp(uint8_t ch) {
+  WiFi.mode(WIFI_AP_STA);
+  // Deterministic AP subnet so the captive-portal gateway/DNS stay stable.
+  WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
+                    IPAddress(255, 255, 255, 0));
+  bool ok = WiFi.softAP(slaveApSsid, MB_AP_PASSWORD, ch, 0 /*not hidden*/, 4 /*max conn*/);
+  if (!ok) {
+    Serial.printf("[LINK] softAP ch %d rejected -> retry ch %d\n", ch, FALLBACK_CHANNEL);
+    ch = (uint8_t)FALLBACK_CHANNEL;
+    ok = WiFi.softAP(slaveApSsid, MB_AP_PASSWORD, ch, 0, 4);
+    if (!ok) Serial.println("[LINK] softAP STILL failed — AP may be down!");
+  }
+  // Kill modem-sleep: with power-save on, the SoftAP delays beacons/DHCP and
+  // slower clients fail to get an IP ("connecting… connection failed"). Must be
+  // re-asserted after every WiFi.mode() change (mode changes reset it).
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  // The mode change tore ESP-NOW down — re-arm it; espnowReinit() pins the peer
+  // to the radio's current (= AP) channel, so send/recv work without leaving AP.
+  espnowReinit();
   // Captive-portal redirect: answer every DNS query with our own IP so the
   // phone's "sign in to network" probe opens the dashboard automatically.
+  dnsServer.stop();
   dnsServer.start(53, "*", WiFi.softAPIP());
-  Serial.printf("[LINK] AP '%s' (pw '%s') ch=%d at http://%s\n",
-                slaveApSsid, MB_AP_PASSWORD, apCh, WiFi.softAPIP().toString().c_str());
+  Serial.printf("[LINK] AP '%s' (pw '%s') up on ch %d at http://%s\n",
+                slaveApSsid, MB_AP_PASSWORD, ch, WiFi.softAPIP().toString().c_str());
+  return ch;
+}
+
+void enterOffline() {
+  Serial.println("[LINK] -> OFFLINE: raising local dashboard AP (stays up; passive recovery)");
+  // Prefer the master's last-known channel so we're co-channel with it and can
+  // recover passively. Keep masterChannel as the TRUE best guess — do NOT clobber
+  // it with a softAP fallback channel, or channel-change recovery would loop.
+  uint8_t want = (masterChannel >= 1 && masterChannel <= 13) ? masterChannel
+                                                             : (uint8_t)FALLBACK_CHANNEL;
+  apChannel = raiseOfflineAp(want);
   linkMode = LINK_OFFLINE;
   lastHopMs = millis();
+  lastHbCheckpoint = lastHeartbeatMs;   // baseline so only NEW beacons count toward recovery
   goodHops = 0;
-  failedHops = 0;
 }
 
 // ==================== SETUP ====================
@@ -259,6 +297,7 @@ void espnowSetup() {
   esp_wifi_set_promiscuous(false);
 
   espnowReinit();   // init ESP-NOW + register callbacks + add peer on the scanned channel
+  esp_wifi_set_ps(WIFI_PS_NONE);   // no modem-sleep -> reliable ESP-NOW + (in offline) SoftAP
 
   linkMode = LINK_ONLINE;
   onlineEnteredMs = millis();
@@ -311,75 +350,94 @@ void serviceOnline() {
   }
 }
 
-// ==================== OFFLINE RECOVERY HOP ====================
-// Briefly leave the AP, tune to the master's channel, send a probe and listen
-// for a heartbeat. Requires RECOVERY_GOOD_HOPS consecutive good hops (with the
-// cloud actually up) before tearing down the AP. The AP blinks for ~RECOVERY_
-// LISTEN_MS each hop; the dashboard JS retries silently to hide it (A6).
-void doRecoveryHop() {
-  // Normally re-tune cheaply to the master's last-known channel. But after a few
-  // failed hops the master may have moved to a NEW channel (router reassignment),
-  // and the heartbeat that carries the new channel is itself unhearable while we
-  // are parked on the old one — a deadlock. Break it by rescanning the master's
-  // SSID, which reads its discovery-AP channel from a full-band scan regardless
-  // of what we last heard. (channel-change recovery)
-  bool forceRescan = (failedHops >= RESCAN_AFTER_FAILED_HOPS);
-  uint8_t ch;
-  if (heartbeatEverSeen && !forceRescan) {
-    ch = masterChannel;
-  } else {
-    int scanned = scanForMasterChannel();
-    if (scanned >= 0) {
-      ch = (uint8_t)scanned;
-      masterChannel = ch;     // adopt the rediscovered channel as the new cache
-    } else {
-      ch = masterChannel;     // master not visible right now -> keep best guess
-    }
-    failedHops = 0;           // counted this rediscovery attempt
-  }
-
+// ==================== OFFLINE RECOVERY ====================
+// The offline AP stays up continuously. Recovery is normally PASSIVE: co-channel
+// with the master, the idle STA interface hears the 1 Hz heartbeat and we just
+// count good beacons (serviceOffline). The only case that must disturb the AP is
+// a master sitting on a channel our SoftAP cannot host (12-14 under the default
+// regulatory domain) — there we briefly hop to probe, because we can't be
+// co-channel. This is the rare exception, not the every-20 s rule it used to be.
+void probeHopForRecovery(uint8_t mc) {
+  Serial.printf("[LINK] probe-hop to ch %d (SoftAP can't host it)\n", mc);
+  dnsServer.stop();
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
-  esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-  espnowReinit();   // STA radio just restarted — re-arm ESP-NOW before the probe + heartbeat listen
+  esp_wifi_set_channel(mc, WIFI_SECOND_CHAN_NONE);
+  espnowReinit();   // STA radio just restarted — re-arm ESP-NOW before probing
 
   unsigned long preHb = lastHeartbeatMs;
   packDeviceMessage();
   esp_now_send(RECEIVER_ADDRESS, (uint8_t *)&espnowOut, sizeof(espnowOut)); // probe
-
   unsigned long t0 = millis();
   while (millis() - t0 < RECOVERY_LISTEN_MS) delay(10); // recv cb runs on WiFi task
 
-  bool heardFreshHb = (lastHeartbeatMs != preHb);
-  bool recovered = heardFreshHb && lastUplinkUp; // node up AND cloud up (A3)
-
-  if (recovered) {
+  if ((lastHeartbeatMs != preHb) && lastUplinkUp) {     // node up AND cloud up (A3)
     goodHops++;
-    failedHops = 0;
-    Serial.printf("[LINK] recovery hop OK (%d/%d) ch=%d\n", goodHops, RECOVERY_GOOD_HOPS, ch);
-    if (goodHops >= RECOVERY_GOOD_HOPS) {
-      enterOnline(ch);
-      return;
-    }
+    Serial.printf("[LINK] probe-hop OK (%d/%d)\n", goodHops, RECOVERY_GOOD_HOPS);
+    if (goodHops >= RECOVERY_GOOD_HOPS) { enterOnline(mc); return; }
   } else {
     goodHops = 0;
-    failedHops++;
   }
+  // Restore the dashboard AP on a client-legal channel (master is on 12-14, so we
+  // can't follow it — clients reach us on a low channel, we keep probe-hopping).
+  uint8_t legal = (apChannel >= 1 && apChannel <= 11) ? apChannel : (uint8_t)FALLBACK_CHANNEL;
+  apChannel = raiseOfflineAp(legal);
+}
 
-  // Not recovered yet -> go back to serving the AP on the master's channel (so a
-  // returning client and our radio agree, and the ESP-NOW peer stays aligned).
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(slaveApSsid, MB_AP_PASSWORD, ch);
-  dnsServer.start(53, "*", WiFi.softAPIP());
-  lastHopMs = millis();
+// Called only while offline AND not currently hearing the master (it's down or
+// has moved channel). Locate its discovery AP and realign: if it's on a SoftAP-
+// hostable channel we MOVE our AP there so recovery goes passive again; if it's
+// on 12-14 we fall back to a brief probe-hop. If the master isn't visible at all
+// it's simply off — keep serving the AP; we'll hear it the moment it returns on
+// our channel, no scan needed.
+void attemptChannelRecovery() {
+  int scanned = scanForMasterChannel();   // brief scan; clients see a short gap, no deauth
+  if (scanned < 0) { goodHops = 0; return; }
+
+  uint8_t mc = (uint8_t)scanned;
+  masterChannel = mc;
+  if (mc == apChannel) return;            // already co-channel; heartbeats will resume passively
+
+  if (mc >= 1 && mc <= 11) {
+    Serial.printf("[LINK] master now on ch %d -> moving AP to follow\n", mc);
+    apChannel = raiseOfflineAp(mc);       // re-home the AP; recovery becomes passive
+    goodHops = 0;
+    return;
+  }
+  probeHopForRecovery(mc);                // 12-14: can't co-channel, must probe
 }
 
 // ==================== OFFLINE SERVICE ====================
 void serviceOffline() {
   dnsServer.processNextRequest();
   server.handleClient();
+
+  unsigned long hb = lastHeartbeatMs;                      // volatile snapshot
+  bool hearingMaster = (millis() - hb) <= HEARTBEAT_TIMEOUT_MS;
+
+  if (hearingMaster) {
+    // Co-channel with a live master: recover passively, NEVER touch the AP.
+    if (hb != lastHbCheckpoint) {                          // a fresh beacon arrived
+      lastHbCheckpoint = hb;
+      if (lastUplinkUp) {
+        goodHops++;
+        if (goodHops >= RECOVERY_GOOD_HOPS) {
+          Serial.printf("[LINK] cloud restored (%d good beacons) -> ONLINE ch %d\n",
+                        goodHops, masterChannel);
+          enterOnline(masterChannel);
+        }
+      } else {
+        goodHops = 0;                                      // master up, cloud still down -> stay
+      }
+    }
+    return;
+  }
+
+  // Not hearing the master: it's down or moved channel. Search periodically,
+  // disturbing the AP as little as possible (see attemptChannelRecovery).
   if (millis() - lastHopMs >= RECOVERY_HOP_INTERVAL_MS) {
-    doRecoveryHop();
+    lastHopMs = millis();
+    attemptChannelRecovery();
   }
 }
 

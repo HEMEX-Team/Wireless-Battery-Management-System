@@ -156,7 +156,8 @@ void espnowSetPeerChannel(uint8_t ch) {
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, RECEIVER_ADDRESS, 6);
   peer.channel = ch;
-  peer.encrypt = false;
+  peer.encrypt = true;                          // AES-128-CCMP to the master
+  memcpy(peer.lmk, WBMS_ESPNOW_LMK, 16);
   esp_now_add_peer(&peer);
 }
 
@@ -179,6 +180,10 @@ void espnowReinit() {
   }
   esp_now_register_send_cb(espnowOnSent);
   esp_now_register_recv_cb(espnowOnRecv);
+  // AES-128-CCMP: PMK must be (re)set after every esp_now_init() — deinit clears
+  // it — and before the encrypted master peer is added below.
+  if (esp_now_set_pmk(WBMS_ESPNOW_PMK) != ESP_OK)
+    Serial.println("[LINK] set PMK failed — link will not be encrypted");
   uint8_t primary = FALLBACK_CHANNEL;
   wifi_second_chan_t second;
   if (esp_wifi_get_channel(&primary, &second) != ESP_OK) primary = FALLBACK_CHANNEL;

@@ -44,6 +44,23 @@ const uint8_t SENDER_ADDRESSES[][6] = {
 };
 const int NUM_SENDERS = sizeof(SENDER_ADDRESSES) / sizeof(SENDER_ADDRESSES[0]);
 
+// ==================== ESP-NOW LINK ENCRYPTION ====================
+// AES-128-CCMP on every slave<->master ESP-NOW frame (telemetry, heartbeat,
+// admin commands, snapshots). The PMK encrypts the LMK at rest; the LMK is the
+// key that actually encrypts the over-the-air frames. The master and EVERY slave
+// must share these exact 16-byte keys, so they live here in shared config.
+// Treat them like a password: regenerate per deployment and keep this file out
+// of any public history.
+// NOTE: while the master is connected to WiFi (our case), the radio supports at
+// most 6 *encrypted* ESP-NOW peers. That covers a handful of slaves; if the
+// fleet ever grows past 6, revisit (e.g. a dedicated AP-less link).
+const uint8_t WBMS_ESPNOW_PMK[16] = {
+    0x57, 0x42, 0x4D, 0x53, 0x5F, 0x70, 0x6D, 0x6B,
+    0x5F, 0x76, 0x31, 0x5F, 0xA3, 0xC1, 0x9E, 0x2D};
+const uint8_t WBMS_ESPNOW_LMK[16] = {
+    0x57, 0x42, 0x4D, 0x53, 0x5F, 0x6C, 0x6D, 0x6B,
+    0x5F, 0x76, 0x31, 0x5F, 0x4B, 0x7F, 0x08, 0xE6};
+
 // ==================== SLAVE CONFIG ====================
 // The offline AP SSID is built at runtime as "wBMS-Slave-<pairingCode>" and
 // uses MB_AP_PASSWORD (tb_config.h); there is no fixed fallback SSID constant.

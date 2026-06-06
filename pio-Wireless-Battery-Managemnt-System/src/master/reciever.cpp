@@ -715,7 +715,8 @@ void handleSlaveCommand(const char *json)
     esp_now_peer_info_t p = {};
     memcpy(p.peer_addr, mac, 6);
     p.channel = currentChannel;
-    p.encrypt = false;
+    p.encrypt = true;
+    memcpy(p.lmk, WBMS_ESPNOW_LMK, 16);
     esp_now_add_peer(&p);
   }
   for (int i = 0; i < 3; i++)   // best-effort: send 3x; the real ack is the seq echo in telemetry
@@ -764,7 +765,8 @@ void updateESPNowChannel(uint8_t newChannel)
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, SENDER_ADDRESSES[i], 6);
     peerInfo.channel = currentChannel;
-    peerInfo.encrypt = false;
+    peerInfo.encrypt = true;
+    memcpy(peerInfo.lmk, WBMS_ESPNOW_LMK, 16);
     esp_now_add_peer(&peerInfo);
   }
 }
@@ -988,12 +990,17 @@ void setup()
 
   esp_now_register_recv_cb(OnDataRecv);
 
+  // AES-128-CCMP: the PMK must be set before adding any encrypted peer.
+  if (esp_now_set_pmk(WBMS_ESPNOW_PMK) != ESP_OK)
+    Serial.println("[ESP-NOW] set PMK failed — link will not be encrypted");
+
   for (int i = 0; i < NUM_SENDERS; i++)
   {
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, SENDER_ADDRESSES[i], 6);
     peerInfo.channel = currentChannel;
-    peerInfo.encrypt = false;
+    peerInfo.encrypt = true;
+    memcpy(peerInfo.lmk, WBMS_ESPNOW_LMK, 16);
     esp_now_add_peer(&peerInfo);
   }
 

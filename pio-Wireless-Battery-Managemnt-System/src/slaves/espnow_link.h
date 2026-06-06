@@ -63,6 +63,7 @@ portMUX_TYPE espnowMux = portMUX_INITIALIZER_UNLOCKED;
 volatile unsigned long lastHeartbeatMs = 0;
 volatile bool          lastUplinkUp = false;
 volatile bool          heartbeatEverSeen = false;
+volatile bool          sendEverAcked = false;     // a master ACKed >=1 ESP-NOW send this boot (covers an old-firmware master that sends no heartbeat)
 volatile uint8_t       masterChannel = FALLBACK_CHANNEL;
 
 unsigned long onlineEnteredMs = 0;
@@ -116,9 +117,10 @@ int scanForMasterChannel() {
 // ==================== ESP-NOW CALLBACKS ====================
 void espnowOnSent(const uint8_t *mac, esp_now_send_status_t status) {
   portENTER_CRITICAL_ISR(&espnowMux);
-  if (status == ESP_NOW_SEND_SUCCESS)
+  if (status == ESP_NOW_SEND_SUCCESS) {
     consecutiveFailures = 0;
-  else
+    sendEverAcked = true;   // we've reached the master at least once this boot
+  } else
     consecutiveFailures++;
   portEXIT_CRITICAL_ISR(&espnowMux);
 }
@@ -242,6 +244,14 @@ void enterOnline(uint8_t ch) {
 // we fall back to a universally-legal channel instead of silently coming up
 // wrong (softAP()'s result was previously never checked).
 uint8_t raiseOfflineAp(uint8_t ch) {
+  // The default "01" regulatory domain only lets a SoftAP beacon on channels
+  // 1-11. Requesting 12-14 brings up an AP that shows in scans but cannot be
+  // joined, and softAP() does NOT reliably report that as a failure on the
+  // 2.0.x core, so the !ok retry below can't be trusted to catch it. Clamp at
+  // this single chokepoint so no caller (incl. enterOffline co-channeling a
+  // master on 12/13) can ever home the AP onto an unjoinable channel. A master
+  // up there is still reached via probeHopForRecovery(), which never co-channels.
+  if (ch < 1 || ch > 11) ch = (uint8_t)FALLBACK_CHANNEL;
   WiFi.mode(WIFI_AP_STA);
   // Deterministic AP subnet so the captive-portal gateway/DNS stay stable.
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
@@ -342,8 +352,10 @@ void serviceOnline() {
   if (millis() - onlineEnteredMs < 3000) return;
 
   int fails;
+  bool acked;
   portENTER_CRITICAL(&espnowMux);
   fails = consecutiveFailures;
+  acked = sendEverAcked;
   portEXIT_CRITICAL(&espnowMux);
 
   bool nodeDown = (fails >= FAILURE_THRESHOLD);
@@ -353,10 +365,19 @@ void serviceOnline() {
   // that case.
   bool hbStale  = heartbeatEverSeen && (millis() - lastHeartbeatMs > HEARTBEAT_TIMEOUT_MS);
   bool cloudDown = heartbeatEverSeen && !hbStale && !lastUplinkUp;
+  // Cold-start safety net: the master was never reachable since boot. If we've
+  // neither heard a heartbeat NOR had a single send ACKed by COLD_START_AP_MS,
+  // fall back even though the failure counter never climbed (e.g. TX-done
+  // callbacks never fired) so the unit ALWAYS ends up reachable on its own AP.
+  // onlineEnteredMs == boot time on this path because enterOnline() (the only
+  // thing that resets it) hasn't run yet. Once either flag latches true this can
+  // never re-trigger, so it's strictly a one-shot cold-start guarantee.
+  bool neverConnected = !heartbeatEverSeen && !acked;
+  bool coldStart = neverConnected && (millis() - onlineEnteredMs > COLD_START_AP_MS);
 
-  if (nodeDown || hbStale || cloudDown) {
-    Serial.printf("[LINK] fallback trigger: nodeDown=%d hbStale=%d cloudDown=%d (fails=%d)\n",
-                  nodeDown, hbStale, cloudDown, fails);
+  if (nodeDown || hbStale || cloudDown || coldStart) {
+    Serial.printf("[LINK] fallback trigger: nodeDown=%d hbStale=%d cloudDown=%d coldStart=%d (fails=%d)\n",
+                  nodeDown, hbStale, cloudDown, coldStart, fails);
     enterOffline();
   }
 }
@@ -443,6 +464,14 @@ void serviceOffline() {
     }
     return;
   }
+
+  // Don't disturb the AP while a client is connected: scanForMasterChannel() is
+  // a blocking all-channel scan that drags the single radio off the AP's channel
+  // for seconds, stalling any in-progress association/DHCP (and the re-home /
+  // probe-hop it can trigger deauths the client outright). Defer recovery until
+  // they leave; passive co-channel recovery via the heartbeat still works above.
+  // Reset the timer so we don't fire a scan the instant the last client drops.
+  if (WiFi.softAPgetStationNum() > 0) { lastHopMs = millis(); return; }
 
   // Not hearing the master: it's down or moved channel. Search periodically,
   // disturbing the AP as little as possible (see attemptChannelRecovery).

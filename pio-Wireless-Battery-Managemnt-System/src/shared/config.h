@@ -66,6 +66,12 @@ const uint8_t WBMS_ESPNOW_LMK[16] = {
 // uses MB_AP_PASSWORD (tb_config.h); there is no fixed fallback SSID constant.
 const int FALLBACK_CHANNEL = 1;   // used only until the master's channel is learned
 const int FAILURE_THRESHOLD = 10; // consecutive ESP-NOW send failures before fallback AP starts
+// Cold-start backstop: if the master is never reachable from boot (powered off,
+// wrong RECEIVER_ADDRESS, out of range) we might never accumulate ACK *failures*
+// either (no TX-done callbacks), so node-down could stall and the AP never opens.
+// If we've neither heard a heartbeat NOR had one send ACKed this long after boot,
+// raise the offline AP anyway. Keep > boot WiFi scan + a few send attempts.
+const uint32_t COLD_START_AP_MS = 15000;
 const uint32_t SEND_INTERVAL_MS = 2000;   // 0.5 Hz uplink (lowered from 500ms to stop the master's queue backing up)
 
 // ==================== MASTER CONFIG ====================

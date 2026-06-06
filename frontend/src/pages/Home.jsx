@@ -303,7 +303,7 @@ function NetworkAnimation() {
           const path = `M ${a.x} ${a.y} C ${cx1} ${a.y}, ${cx1} ${masterIn.y}, ${masterIn.x} ${masterIn.y}`;
           return (
             <g key={`link-${i}`}>
-              <path d={path} fill="none" stroke="#cbd5e1" strokeWidth="1.5" />
+              <path d={path} fill="none" stroke="#b6c2d4" strokeWidth="2.5" />
               <circle r="4.5" fill="#0ea5e9" filter="url(#glow)">
                 <animateMotion dur="2.8s" begin={`${i * 0.45}s`} repeatCount="indefinite" path={path} />
               </circle>
@@ -314,7 +314,7 @@ function NetworkAnimation() {
           const path = `M ${masterOut.x} ${masterOut.y} L ${userIn.x} ${userIn.y}`;
           return (
             <g key="link-user">
-              <path d={path} fill="none" stroke="#cbd5e1" strokeWidth="1.5" />
+              <path d={path} fill="none" stroke="#b6c2d4" strokeWidth="2.5" />
               {[0, 1.4].map((delay, j) => (
                 <circle key={j} r="4.5" fill="#0ea5e9" filter="url(#glow)">
                   <animateMotion dur="2.8s" begin={`${delay}s`} repeatCount="indefinite" path={path} />
@@ -330,7 +330,7 @@ function NetworkAnimation() {
           const top = s.cy - SLAVE_H / 2;
           return (
             <g key={s.id}>
-              <rect x={x} y={top} width={SLAVE_W} height={SLAVE_H} rx="14" fill="url(#nodeFill)" stroke="#d3dbe6" strokeWidth="1.4" filter="url(#soft)" />
+              <rect x={x} y={top} width={SLAVE_W} height={SLAVE_H} rx="14" fill="url(#nodeFill)" stroke="#9fb0c6" strokeWidth="2.6" filter="url(#soft)" />
               <Glyph id="battery" cx={s.cx} cy={s.cy} delay={i * 0.7} />
               <text x={s.cx} y={s.cy + SLAVE_H / 2 + 17} textAnchor="middle" fontSize="13" fontWeight="700" fill="#0f172a" fontFamily="ui-sans-serif, system-ui">{s.label}</text>
             </g>
@@ -342,14 +342,14 @@ function NetworkAnimation() {
           <circle cx={masterCx} cy={masterCy} r="58" fill="url(#hubGlow)">
             <animate attributeName="r" values="48;62;48" dur="3s" repeatCount="indefinite" />
           </circle>
-          <rect x={masterCx - MASTER_W / 2} y={masterCy - MASTER_H / 2} width={MASTER_W} height={MASTER_H} rx="16" fill="url(#nodeFill)" stroke="#0891b2" strokeWidth="2" filter="url(#soft)" />
+          <rect x={masterCx - MASTER_W / 2} y={masterCy - MASTER_H / 2} width={MASTER_W} height={MASTER_H} rx="16" fill="url(#nodeFill)" stroke="#0891b2" strokeWidth="3.4" filter="url(#soft)" />
           <Glyph id="master" cx={masterCx} cy={masterCy} />
           <text x={masterCx} y={masterCy + MASTER_H / 2 + 19} textAnchor="middle" fontSize="13" fontWeight="700" fill="#0f172a" fontFamily="ui-sans-serif, system-ui">MASTER</text>
         </g>
 
         {/* Users — screen icon inside, label below */}
         <g>
-          <rect x={userCx - USER_W / 2} y={userCy - USER_H / 2} width={USER_W} height={USER_H} rx="16" fill="url(#nodeFill)" stroke="#d3dbe6" strokeWidth="1.4" filter="url(#soft)" />
+          <rect x={userCx - USER_W / 2} y={userCy - USER_H / 2} width={USER_W} height={USER_H} rx="16" fill="url(#nodeFill)" stroke="#9fb0c6" strokeWidth="2.6" filter="url(#soft)" />
           <Glyph id="users" cx={userCx} cy={userCy} />
           <text x={userCx} y={userCy + USER_H / 2 + 19} textAnchor="middle" fontSize="13" fontWeight="700" fill="#0f172a" fontFamily="ui-sans-serif, system-ui">USERS</text>
         </g>
@@ -364,7 +364,7 @@ function Glyph({ id, cx, cy, delay = 0 }) {
     // Battery whose charge level animates up and down (charge/discharge).
     return (
       <g>
-        <rect x={cx - 20} y={cy - 12} width="36" height="24" rx="4" fill="none" stroke="#0ea5e9" strokeWidth="2.4" />
+        <rect x={cx - 20} y={cy - 12} width="36" height="24" rx="4" fill="none" stroke="#0ea5e9" strokeWidth="3.2" />
         <rect x={cx + 16} y={cy - 6} width="5" height="12" rx="1.5" fill="#0ea5e9" />
         <rect x={cx - 16} y={cy - 8} width="16" height="16" rx="1.5" fill="#0ea5e9">
           <animate attributeName="width" values="4;28;4" dur="3s" begin={`${delay}s`} repeatCount="indefinite" />
@@ -374,7 +374,7 @@ function Glyph({ id, cx, cy, delay = 0 }) {
   }
   if (id === "master") {
     return (
-      <g fill="none" stroke="#0891b2" strokeWidth="2.4" strokeLinecap="round">
+      <g fill="none" stroke="#0891b2" strokeWidth="3.2" strokeLinecap="round">
         <path d={`M ${cx - 9} ${cy + 3} a 9 9 0 0 1 18 0`} />
         <path d={`M ${cx - 15} ${cy - 2} a 15 15 0 0 1 30 0`} />
         <path d={`M ${cx - 21} ${cy - 7} a 21 21 0 0 1 42 0`} opacity="0.45" />
@@ -384,7 +384,7 @@ function Glyph({ id, cx, cy, delay = 0 }) {
   }
   // users — screen with bar chart
   return (
-    <g fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round">
+    <g fill="none" stroke="#10b981" strokeWidth="2.8" strokeLinecap="round">
       <rect x={cx - 16} y={cy - 12} width="32" height="22" rx="2" fill="#ffffff" />
       <line x1={cx} y1={cy + 10} x2={cx} y2={cy + 14} />
       <line x1={cx - 7} y1={cy + 14} x2={cx + 7} y2={cy + 14} />

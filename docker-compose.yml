@@ -61,6 +61,25 @@ services:
     # ports:
     #   - "8000:8000"
 
+  # VPS-side EKF digital twin: reuses the backend image, polls the readings table,
+  # and writes an independent SoC into readings.vps_ekf_soc. DB-only (no MQTT/ports).
+  ekf-worker:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.ekf.worker"]
+    environment:
+      - WBMS_DATABASE_URL=postgresql+psycopg2://wbms:50efdb4e90c54b99cb9d83dcd6a26f2308b3@postgres:5432/wbms
+      - WBMS_LOG_LEVEL=INFO
+      - EKF_POLL_INTERVAL_S=5
+      - EKF_NN_ENABLED=false
+      # DEVICE-SPECIFIC current calibration (set offset=0, gain=1 to disable):
+      - EKF_CURRENT_OFFSET_A=0.048
+      - EKF_CURRENT_GAIN=1.030
+      - EKF_CURRENT_DEADBAND_A=0.010
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   frontend:
     build: ./frontend
     restart: unless-stopped

@@ -268,7 +268,9 @@ def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
         v_estimated=v_real,
         soc=soc,
         soh=soh,
-        ekf_soc=soc,
+        # Provisional seed for the VPS digital-twin SoC (NOT NULL): the ekf-worker
+        # overwrites this with its independent estimate within a poll interval.
+        vps_ekf_soc=soc,
         power=power,
         charging_discharging=_charging_discharging_flag(payload),
         charge=charge_ah,

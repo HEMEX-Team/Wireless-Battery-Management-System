@@ -209,6 +209,11 @@ def get_latest_pack_data(
             last_update = latest_reading.timestamp.replace(microsecond=0).isoformat() + "Z"
             soc = round(latest_reading.soc)
             soh = round(latest_reading.soh)
+            # Independent VPS digital-twin SoC + its divergence from the device SoC.
+            vps_ekf_soc = (round(latest_reading.vps_ekf_soc)
+                           if latest_reading.vps_ekf_soc is not None else None)
+            soc_divergence = (round(latest_reading.vps_ekf_soc - latest_reading.soc, 1)
+                              if latest_reading.vps_ekf_soc is not None else None)
             voltage = f"{latest_reading.v_real:.2f}"
             current_val = f"{latest_reading.current:.2f}"
             temp = f"{latest_reading.temperature:.2f}"
@@ -288,6 +293,8 @@ def get_latest_pack_data(
             last_update = None
             soc = rng.randint(50, 100)
             soh = rng.randint(90, 100)
+            vps_ekf_soc = None       # twin only runs on real telemetry, not demo packs
+            soc_divergence = None
             voltage = f"{rng.uniform(3.2 * series, 4.2 * series):.2f}"
             current_val = f"{rng.uniform(5.0, 15.0):.2f}"
             base_temp = rng.uniform(25.0, 40.0)
@@ -309,6 +316,9 @@ def get_latest_pack_data(
             "status": pack_status,
             "soc": soc,
             "soh": soh,
+            # Digital twin: independent VPS EKF SoC + its delta vs the device SoC.
+            "vps_ekf_soc": vps_ekf_soc,
+            "soc_divergence": soc_divergence,
             "voltage": voltage,
             "current": current_val,
             "temp": temp,
@@ -339,6 +349,10 @@ def get_latest_pack_data(
 _EXPORT_COLUMNS = [
     "timestamp", "soc", "soh", "voltage_v", "current_a",
     "temperature_c", "temp1_c", "temp2_c", "temp3_c", "power_w", "state",
+    # VPS digital-twin SoC (independent of the device `soc`) + its uncertainty.
+    # APPENDED so existing positional column indices stay stable (the frontend reads
+    # rows by index, e.g. r[1] = soc).
+    "vps_ekf_soc", "vps_ekf_soc_uncertainty",
 ]
 
 
@@ -376,6 +390,7 @@ def _reading_row(r: Reading) -> list:
         _round(r.v_real, 3), _round(r.current, 3),
         _round(r.temperature, 2), _round(r.temp1, 2), _round(r.temp2, 2), _round(r.temp3, 2),
         _round(r.power, 2), state,
+        _round(r.vps_ekf_soc, 2), _round(r.vps_ekf_soc_uncertainty, 3),
     ]
 
 

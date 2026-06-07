@@ -124,9 +124,13 @@ class Reading(Base):
     temp3 = Column(Float, nullable=True)
     cycles = Column(Integer, nullable=False)
     v_estimated = Column(Float, nullable=False)
-    soc = Column(Float, nullable=False)
+    soc = Column(Float, nullable=False)            # device/master ESP32 EKF SoC
     soh = Column(Float, nullable=False)
-    ekf_soc = Column(Float, nullable=False)
+    # Independent VPS-side EKF ("digital twin") SoC + its uncertainty (sqrt P[0,0]).
+    # Renamed from the old redundant `ekf_soc` to disambiguate from the device `soc`.
+    # Seeded = soc at insert (provisional); the ekf-worker overwrites it.
+    vps_ekf_soc = Column(Float, nullable=False)
+    vps_ekf_soc_uncertainty = Column(Float, nullable=True)
     power = Column(Float, nullable=True)
     charging_discharging = Column(Boolean, nullable=True)
     # Coulomb-counter accumulators reported by firmware (charge in Ah, time in s).
@@ -218,3 +222,20 @@ class BmsCommand(Base):
     __table_args__ = (
         Index('idx_bms_cmd_pack_seq', 'pack_id', 'seq'),
     )
+
+
+class EkfState(Base):
+    """Resumable per-pack state for the VPS digital-twin EKF worker. One row per pack:
+    a watermark (last processed reading id), the last reading timestamp (for real Δt),
+    and the serialized filter state (x + P). Lets the worker restart/backfill without
+    re-bootstrapping from scratch. See app/ekf/worker.py."""
+    __tablename__ = "ekf_state"
+
+    pack_id = Column(
+        Integer, ForeignKey("packs.id", ondelete="CASCADE"), primary_key=True
+    )
+    last_reading_id = Column(Integer, nullable=False, default=0)   # watermark
+    last_timestamp = Column(DateTime, nullable=True)              # for Δt between rows
+    state_json = Column(Text, nullable=True)                      # BatteryEKF.dump_state()
+    initialized = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)

@@ -122,6 +122,9 @@ class Reading(Base):
     temp1 = Column(Float, nullable=True)
     temp2 = Column(Float, nullable=True)
     temp3 = Column(Float, nullable=True)
+    # BMS IC internal/die temperature (chipTemp). Previously only used as a fallback
+    # for the mean `temperature`; now persisted so every slave-reported temp is stored.
+    chip_temp = Column(Float, nullable=True)
     cycles = Column(Integer, nullable=False)
     v_estimated = Column(Float, nullable=False)
     soc = Column(Float, nullable=False)            # device/master ESP32 EKF SoC

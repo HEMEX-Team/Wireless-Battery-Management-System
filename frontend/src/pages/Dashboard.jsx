@@ -1224,6 +1224,28 @@ const deriveChargeStats = (series, currentSoc, currentAmps) => {
   return { lastCharged, lastChargedTo, timeToEmptyMin, cycles };
 };
 
+// Aggregate per-pack DB charge-stats (/charge-stats) into one set for the Summary
+// view: sum cycles, take the most-recent charge event, and the soonest time-to-empty.
+// Returns null if no pack has stats yet (card then falls back to session-derived).
+const aggregateDbChargeStats = (list) => {
+  const valid = (list || []).filter(Boolean);
+  if (!valid.length) return null;
+  let cycles = 0, last_charged = null, last_charged_to = null, time_to_empty_min = null;
+  for (const s of valid) {
+    cycles += s.cycles || 0;
+    if (s.last_charged && (!last_charged || new Date(s.last_charged) > new Date(last_charged))) {
+      last_charged = s.last_charged;
+      last_charged_to = s.last_charged_to;
+    }
+    if (s.time_to_empty_min != null) {
+      time_to_empty_min = time_to_empty_min == null
+        ? s.time_to_empty_min
+        : Math.min(time_to_empty_min, s.time_to_empty_min);
+    }
+  }
+  return { last_charged, last_charged_to, time_to_empty_min, cycles };
+};
+
 // Pulls notable SOC events from the aggregate range series.
 const deriveActivityEvents = (series) => {
   if (!series || series.length < 4) return [];
@@ -1232,7 +1254,7 @@ const deriveActivityEvents = (series) => {
   for (let i = 1; i < series.length; i++) {
     const delta = series[i].percentage - series[segStart].percentage;
     const span  = i - segStart;
-    if (Math.abs(delta) >= 4 && span >= 2) {
+    if (Math.abs(delta) >= 3 && span >= 2) {
       const rate = Math.abs(delta) / span; // %/sample
       let label;
       if (delta > 0) label = 'Charged';
@@ -1386,7 +1408,9 @@ const ActivityInsightsCard = ({ rangeData, currentAmps }) => {
             Recent activity
           </div>
           {events.length === 0 ? (
-            <p className="text-xs text-gray-400 italic py-2">Collecting data...</p>
+            <p className="text-xs text-gray-400 italic py-2">
+              {rangeData && rangeData.length >= 4 ? 'No notable activity recently' : 'Collecting data…'}
+            </p>
           ) : (
             <div className="space-y-2">
               {events.map((e, i) => {
@@ -1817,6 +1841,9 @@ const Dashboard = () => {
   const [packRangeData, setPackRangeData] = useState({});
   const [packThermalHistory, setPackThermalHistory] = useState({});
   const [alarms, setAlarms] = useState([]);
+  // Real DB-computed charge stats, aggregated across packs, for the Summary view's
+  // Charge Stats card (the per-pack detail view fetches its own).
+  const [aggChargeStats, setAggChargeStats] = useState(null);
   // Transient banner for failed user actions / background fetches so errors
   // aren't swallowed silently. Cleared on the next successful poll or dismiss.
   const [actionError, setActionError] = useState(null);
@@ -2071,6 +2098,18 @@ const Dashboard = () => {
     })();
   }, [userPacks]);
 
+  // Real charge stats for the Summary view, aggregated across all packs from the
+  // backend (cycles, last charged, charged-to, time-to-empty). Without this the
+  // Summary card fell back to a session-derived estimate that was usually empty.
+  useEffect(() => {
+    if (userPacks.length === 0) { setAggChargeStats(null); return; }
+    let cancelled = false;
+    Promise.all(
+      userPacks.map((p) => apiFetch(`/v1/packs/${p.id}/charge-stats`).catch(() => null))
+    ).then((list) => { if (!cancelled) setAggChargeStats(aggregateDbChargeStats(list)); });
+    return () => { cancelled = true; };
+  }, [userPacks, refreshKey]);
+
   // Fetch data on mount and set up polling
   useEffect(() => {
     fetchBatteryData();
@@ -2098,6 +2137,8 @@ const Dashboard = () => {
         lowSoh: pack.soh < 80,
         highTemp: parseFloat(pack.temp) > 40,
         imbalanced: cellDeltaMv > 600,
+        // Digital-twin cross-check: |device SoC − VPS model SoC| ≥ 10 pts.
+        socDivergence: pack.soc_divergence != null && Math.abs(pack.soc_divergence) >= 10,
       };
 
       if (currentSignals.status === 'alert' && prev.status !== 'alert') {
@@ -2198,6 +2239,21 @@ const Dashboard = () => {
         }));
       }
       currentSignals.protKey = protKey;
+
+      // Digital-twin cross-check: a large gap between the device SoC and the VPS
+      // model SoC suggests a sensor/firmware problem. Warn (not critical) on a
+      // newly-large divergence so it isn't re-raised every poll.
+      if (currentSignals.socDivergence && !prev.socDivergence) {
+        newAlarms.push({
+          id: `${pack.id}-divergence-${now.getTime()}`,
+          time: now.toISOString(),
+          packId: pack.id,
+          packName: pack.name,
+          severity: 'warning',
+          type: 'SoC Divergence',
+          cause: `Device ${pack.soc}% vs model ${pack.vps_ekf_soc ?? '—'}% (Δ ${pack.soc_divergence > 0 ? '+' : ''}${pack.soc_divergence}%) — possible sensor/firmware drift`,
+        });
+      }
 
       lastAlarmStates.current[pack.id] = currentSignals;
     });
@@ -2361,7 +2417,7 @@ const Dashboard = () => {
           )}
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-gray-900">Charge Stats</h2>
-            <ChargeStatsCard pack={aggregatePack} chartData={rangeData} />
+            <ChargeStatsCard pack={aggregatePack} chartData={rangeData} dbStats={aggChargeStats} />
           </div>
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-gray-900">Pack Activity</h2>

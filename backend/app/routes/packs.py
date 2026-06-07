@@ -348,7 +348,7 @@ def get_latest_pack_data(
 # and the downloaded file always match exactly.
 _EXPORT_COLUMNS = [
     "timestamp", "soc", "soh", "voltage_v", "current_a",
-    "temperature_c", "temp1_c", "temp2_c", "temp3_c", "power_w", "state",
+    "temperature_c", "temp1_c", "temp2_c", "temp3_c", "chip_temp_c", "power_w", "state",
     # VPS digital-twin SoC (independent of the device `soc`) + its uncertainty.
     # APPENDED so existing positional column indices stay stable (the frontend reads
     # rows by index, e.g. r[1] = soc).
@@ -388,7 +388,7 @@ def _reading_row(r: Reading) -> list:
         r.timestamp.replace(microsecond=0).isoformat(),
         _round(r.soc, 2), _round(r.soh, 2),
         _round(r.v_real, 3), _round(r.current, 3),
-        _round(r.temperature, 2), _round(r.temp1, 2), _round(r.temp2, 2), _round(r.temp3, 2),
+        _round(r.temperature, 2), _round(r.temp1, 2), _round(r.temp2, 2), _round(r.temp3, 2), _round(r.chip_temp, 2),
         _round(r.power, 2), state,
         _round(r.vps_ekf_soc, 2), _round(r.vps_ekf_soc_uncertainty, 3),
     ]

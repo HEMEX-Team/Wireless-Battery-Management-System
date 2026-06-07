@@ -210,14 +210,21 @@ def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
         except (TypeError, ValueError):
             return None
 
-    temp1_v = _as_float("temp1")
-    temp2_v = _as_float("temp2")
-    temp3_v = _as_float("temp3")
+    # Clamp sub-zero readings to 0 before storing: a negative temperature means a
+    # disconnected / glitching NTC, not a real value, so persist 0 instead.
+    def _as_temp(key: str) -> Optional[float]:
+        val = _as_float(key)
+        return None if val is None else max(0.0, val)
+
+    temp1_v = _as_temp("temp1")
+    temp2_v = _as_temp("temp2")
+    temp3_v = _as_temp("temp3")
+    chip_temp_v = _as_temp("chipTemp")  # BMS IC internal temp — now stored, not just a fallback
     present_temps = [t for t in (temp1_v, temp2_v, temp3_v) if t is not None]
     if present_temps:
         temperature = sum(present_temps) / len(present_temps)
     else:
-        temperature = _as_float("chipTemp") or 0.0
+        temperature = chip_temp_v if chip_temp_v is not None else 0.0
 
     # Prefer the master's EKF SoC (published as 'soc'); only fall back to a
     # linear estimate for old firmware that doesn't send it.
@@ -264,6 +271,7 @@ def _persist_reading(db: Session, pack: Pack, payload: dict[str, Any]) -> None:
         temp1=temp1_v,
         temp2=temp2_v,
         temp3=temp3_v,
+        chip_temp=chip_temp_v,
         cycles=0,
         v_estimated=v_real,
         soc=soc,

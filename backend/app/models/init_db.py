@@ -23,6 +23,7 @@ _LIGHTWEIGHT_MIGRATIONS = [
     ("readings", "temp1", "FLOAT"),
     ("readings", "temp2", "FLOAT"),
     ("readings", "temp3", "FLOAT"),
+    ("readings", "chip_temp", "FLOAT"),
     ("readings", "charge", "FLOAT"),
     ("readings", "charge_time", "INTEGER"),
     ("readings", "ss_a", "INTEGER"),

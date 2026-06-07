@@ -67,13 +67,13 @@ const NX = 80;   // chunky pixel grid — horizontal cells
 const NY = 24;   // chunky pixel grid — vertical cells
 
 // Fixed color range so the gradient reads as absolute temperature, not relative.
-const Z_MIN = 25;
-const Z_MAX = 50;
+const Z_MIN = 30;
+const Z_MAX = 80;
 
 // Pack background ("normal" / ambient) temperature — anywhere away from a
-// thermistor decays toward this value. Sits comfortably below sensor readings
+// thermistor decays toward this value. Sits at the bottom of the color range
 // so the sensor positions stand out as warm spots.
-const T_AMBIENT = 27;
+const T_AMBIENT = 30;
 
 // Sensor positions in normalized pack space (x = length, y = depth).
 // Slightly inset from the edges; all on the centerline of the pack.

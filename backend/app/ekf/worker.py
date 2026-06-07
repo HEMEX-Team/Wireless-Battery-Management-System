@@ -129,8 +129,14 @@ def main() -> None:
         level=os.getenv("WBMS_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    Base.metadata.create_all(bind=engine)
-    apply_lightweight_migrations(engine)
+    # Best-effort schema init. The backend runs the same create_all + migrations on
+    # startup, so a concurrent-create race here is harmless — log and continue; the
+    # poll loop (and its per-pack try/except) retries once the schema settles.
+    try:
+        Base.metadata.create_all(bind=engine)
+        apply_lightweight_migrations(engine)
+    except Exception:
+        log.exception("schema init failed (continuing; backend also applies it)")
     log.info("EKF twin worker started (poll=%.1fs batch=%d nn=%s adaptive=%s)",
              POLL_INTERVAL_S, BATCH_SIZE, NN_ENABLED, ADAPTIVE)
     while True:

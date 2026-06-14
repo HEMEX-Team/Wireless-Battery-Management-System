@@ -11,12 +11,12 @@ const char *const MASTER_AP_SSID = "WBMS-Node"; // Soft AP the slave scans to di
 const uint32_t WIFI_RETRY_INTERVAL_MS = 10000;  // master background reconnect check cadence
 
 // ==================== MQTT CONFIG ====================
-const char *const MQTT_BROKER = "143.198.121.33";
+const char *const MQTT_BROKER = "217.160.46.57";
 const uint16_t MQTT_PORT = 1883;
 const char *const MQTT_TOPIC = "bms/data";
 const char *const MQTT_CLIENT_ID = "wbms-master";
 const char *const MQTT_USERNAME = "wbms-master";
-const char *const MQTT_PASSWORD = "mito1234";
+const char *const MQTT_PASSWORD = "change-me";
 const uint32_t MQTT_RECONNECT_INTERVAL_MS = 5000;
 // Master subscribes to "<prefix><masterPairingCode>" for cloud->device commands (e.g. OTA).
 const char *const MQTT_CMD_TOPIC_PREFIX = "bms/cmd/";

@@ -8,22 +8,45 @@
 #   * Build failure -> HEAD is rolled back to the previous commit, so the NEXT
 #     run RETRIES instead of advancing HEAD and silently never rebuilding. The
 #     old (working) containers keep running while a build is broken.
-#   * Self-update: the live /root/deploy.sh atomically syncs itself from the
+#   * Self-update: the live $REPO/deploy.sh atomically syncs itself from the
 #     version-controlled ops/deploy.sh (syntax-checked first), so a pushed
 #     script change propagates on the next run — no manual copy needed.
 #   * Dangling images are pruned after a successful rebuild to keep disk in check.
 #
-# Live copy at /root/deploy.sh (decoupled so a pull never rewrites it mid-run).
-# cron: */5 * * * * /root/deploy.sh   |   log: /var/log/wbms-deploy.log
+# Usage:
+#   ops/deploy.sh /path/to/repo
+#
+# First run copies ops/deploy.sh -> $REPO/deploy.sh. Cron should invoke the
+# live copy so a pull never rewrites the script mid-run:
+#   */5 * * * * /path/to/repo/deploy.sh /path/to/repo
+# Log: $REPO/wbms-deploy.log
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-REPO=/root/Wireless-Battery-Management-System
-LOG=/var/log/wbms-deploy.log
-LIVE=/root/deploy.sh
+if [ $# -lt 1 ] || [ -z "${1:-}" ]; then
+  echo "Usage: $0 /path/to/repo" >&2
+  exit 1
+fi
+
+REPO=$(cd "$1" && pwd)
+LOG="$REPO/wbms-deploy.log"
+LIVE="$REPO/deploy.sh"
+
+if [ ! -d "$REPO/.git" ]; then
+  echo "ERROR: $REPO is not a git repository" >&2
+  exit 1
+fi
+
 cd "$REPO"
 
-exec 9>/tmp/wbms-deploy.lock
+if [ -f "$REPO/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO/.env"
+  set +a
+fi
+
+exec 9>"$REPO/.deploy.lock"
 flock -n 9 || exit 0   # single-flight: skip if a previous build is still running
 
 # Keep the live script in sync with the repo's canonical ops/deploy.sh. Atomic
@@ -47,14 +70,16 @@ sync_self() {
 # Provision it idempotently with both users. Password mirrors MQTT_PASSWORD.
 ensure_mqtt_passwd() {
   local pf="$REPO/mosquitto/config/passwd"
-  local pw="${MQTT_PASSWORD:-mito1234}"
+  local pw="${MQTT_PASSWORD:-change-me}"
   if [ -f "$pf" ] && grep -q '^wbms-master:' "$pf" && grep -q '^wbms-backend:' "$pf"; then
+    chmod 644 "$pf" 2>/dev/null || true
     return 0
   fi
   echo "provisioning mosquitto passwd (wbms-master, wbms-backend)"
   docker run --rm -v "$REPO/mosquitto/config:/mosquitto/config" eclipse-mosquitto:2 sh -c \
     "mosquitto_passwd -c -b /mosquitto/config/passwd wbms-master '$pw' && \
      mosquitto_passwd -b /mosquitto/config/passwd wbms-backend '$pw'"
+  chmod 644 "$pf"
 }
 
 git fetch --quiet origin main

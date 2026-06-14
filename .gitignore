@@ -8,7 +8,9 @@ Thumbs.db
 
 # Environment variables
 .env
+!.env.example
 *.env
+!*.env.example
 
 # Google OAuth client secrets
 client_secret_*.json

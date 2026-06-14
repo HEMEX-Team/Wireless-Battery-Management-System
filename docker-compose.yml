@@ -3,7 +3,7 @@ services:
     image: eclipse-mosquitto:2
     restart: unless-stopped
     ports:
-      - "1883:1883"
+      - "${MQTT_PORT:-1883}:1883"
     volumes:
       - ./mosquitto/config:/mosquitto/config
       - mosquitto-data:/mosquitto/data
@@ -13,17 +13,16 @@ services:
     image: postgres:16
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=wbms
-      - POSTGRES_PASSWORD=50efdb4e90c54b99cb9d83dcd6a26f2308b3
-      - POSTGRES_DB=wbms
+      POSTGRES_USER: ${POSTGRES_USER:-wbms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-wbms}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     # Bound to localhost only — reachable via an SSH tunnel, never the public net.
-    # Beekeeper connects by SSH-tunnelling into the host, then to 127.0.0.1:5432.
     ports:
-      - "127.0.0.1:5432:5432"
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wbms -d wbms"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wbms} -d ${POSTGRES_DB:-wbms}"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -35,56 +34,51 @@ services:
       - db-data:/app/data
       - firmware-artifacts:/app/firmware_artifacts
     environment:
-      - WBMS_DATABASE_URL=postgresql+psycopg2://wbms:50efdb4e90c54b99cb9d83dcd6a26f2308b3@postgres:5432/wbms
-      - WBMS_SECRET_KEY=ab608e384edf5a9032436c28d5989957c7f232e04066a9b8146212821ee97ac9
-      - MQTT_BROKER=mosquitto
-      - MQTT_PORT=1883
-      - MQTT_TOPIC=bms/data
-      - MQTT_USERNAME=wbms-backend
-      - MQTT_PASSWORD=mito1234
-      - FRONTEND_ORIGIN=https://wbms.systems
-      - CONNECTED_CELLS=3
-      - PARALLEL_COUNT=1
-      - GOOGLE_CLIENT_ID=1017515470953-bpdre0hbqc5r7ejsf4rr466ndbgv5isg.apps.googleusercontent.com
-      # OTA — the public URL the master will fetch firmware blobs from.
-      # OTA_URL_SECRET signs short-lived blob tokens; rotate occasionally.
-      - BACKEND_PUBLIC_URL=https://wbms.systems
-      - OTA_URL_SECRET=${OTA_URL_SECRET:-change-me-in-production-please}
-      - FIRMWARE_DIR=/app/firmware_artifacts
+      WBMS_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-wbms}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-wbms}
+      WBMS_SECRET_KEY: ${WBMS_SECRET_KEY:-change-me}
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: 1883
+      MQTT_TOPIC: ${MQTT_TOPIC:-bms/data}
+      MQTT_USERNAME: ${MQTT_USERNAME:-wbms-backend}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-change-me}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:8080}
+      CONNECTED_CELLS: ${CONNECTED_CELLS:-3}
+      PARALLEL_COUNT: ${PARALLEL_COUNT:-1}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-http://localhost:8080}
+      OTA_URL_SECRET: ${OTA_URL_SECRET:-change-me-in-production-please}
+      FIRMWARE_DIR: /app/firmware_artifacts
     depends_on:
       mosquitto:
         condition: service_started
       postgres:
         condition: service_healthy
-    # No ports exposed — only reachable via the frontend Nginx proxy
-    # To access API docs directly, uncomment:
-    # ports:
-    #   - "8000:8000"
 
-  # VPS-side EKF digital twin: reuses the backend image, polls the readings table,
-  # and writes an independent SoC into readings.vps_ekf_soc. DB-only (no MQTT/ports).
   ekf-worker:
     build: ./backend
     restart: unless-stopped
     command: ["python", "-m", "app.ekf.worker"]
     environment:
-      - WBMS_DATABASE_URL=postgresql+psycopg2://wbms:50efdb4e90c54b99cb9d83dcd6a26f2308b3@postgres:5432/wbms
-      - WBMS_LOG_LEVEL=INFO
-      - EKF_POLL_INTERVAL_S=5
-      - EKF_NN_ENABLED=false
-      # DEVICE-SPECIFIC current calibration (set offset=0, gain=1 to disable):
-      - EKF_CURRENT_OFFSET_A=0.048
-      - EKF_CURRENT_GAIN=1.030
-      - EKF_CURRENT_DEADBAND_A=0.010
+      WBMS_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-wbms}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-wbms}
+      WBMS_LOG_LEVEL: ${WBMS_LOG_LEVEL:-INFO}
+      EKF_POLL_INTERVAL_S: ${EKF_POLL_INTERVAL_S:-5}
+      EKF_NN_ENABLED: ${EKF_NN_ENABLED:-false}
+      EKF_CURRENT_OFFSET_A: ${EKF_CURRENT_OFFSET_A:-0.048}
+      EKF_CURRENT_GAIN: ${EKF_CURRENT_GAIN:-1.030}
+      EKF_CURRENT_DEADBAND_A: ${EKF_CURRENT_DEADBAND_A:-0.010}
     depends_on:
       postgres:
         condition: service_healthy
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${PUBLIC_URL:-http://localhost:8080}
+        VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:80"
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
     depends_on:
       - backend
 
